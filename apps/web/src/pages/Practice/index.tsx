@@ -9,106 +9,450 @@ import { usePracticeSession }      from '@/hooks/usePracticeSession'
 import { usePracticeStore }        from '@/store/practiceStore'
 import NoteSequence                from '@/components/practice/NoteSequence'
 import PianoRoll                   from '@/components/practice/PianoRoll'
-import DrumPad                     from '@/components/practice/DrumPad'
+import GuitarFretboard             from '@/components/practice/GuitarFretboard'
+import DrumKit                     from '@/components/practice/DrumPad'
 import FeedbackFlash               from '@/components/practice/FeedbackFlash'
 import Countdown                   from '@/components/practice/Countdown'
+import KeyboardGuide               from '@/components/practice/KeyboardGuide'
 import ScoreBoard                  from '@/components/score/ScoreBoard'
 import Button                      from '@/components/ui/Button'
 import LoadingSpinner              from '@/components/ui/LoadingSpinner'
 import { scoreService }            from '@/services/score.service'
 import { ROUTES }                  from '@/constants/routes'
 
-type NS = 'pending'|'active'|'hit'|'miss'
+type NS = 'pending' | 'active' | 'hit' | 'miss'
+
+// ── MIDI note number → Scientific pitch name ────────────────
+function midiToScientific(midi: number): string {
+  if (!midi || midi === 0) return '—'
+  const names = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B']
+  const octave = Math.floor(midi / 12) - 1
+  const note   = names[midi % 12]
+  return `${note}${octave}`
+}
 
 export default function Practice() {
-  const { lessonId }  = useParams<{lessonId:string}>()
+  const { lessonId }  = useParams<{ lessonId: string }>()
   const nav           = useNavigate()
-  const { data:lesson, isLoading } = useLesson(lessonId!)
-  const { sessionState, noteIndex, setLesson, bpm } = usePracticeStore()
-  const { bpm:currentBPM, adjustBPM, metronomeOn, toggleMetronome, setBPM } = useMetronome()
+  const { data: lesson, isLoading } = useLesson(lessonId!)
+  const { sessionState, noteIndex, setLesson } = usePracticeStore()
+  const { bpm: currentBPM, adjustBPM, metronomeOn, toggleMetronome, setBPM } = useMetronome()
   const { startSession, handleNoteOn, restartSession, getScore, getFeedback } = usePracticeSession()
 
-  const [activeNotes,  setActive]    = useState<Set<number>>(new Set())
-  const [expectedNote, setExpected]  = useState<number|undefined>()
-  const [noteStates,   setNStates]   = useState<NS[]>([])
-  const [fbText,       setFbText]    = useState('')
-  const [fbColor,      setFbColor]   = useState('')
-  const [showFb,       setShowFb]    = useState(false)
-  const [scoreResult,  setScore]     = useState<any>(null)
-  const [unlocked,     setUnlocked]  = useState(false)
+  const [activeNotes,  setActive]   = useState<Set<number>>(new Set())
+  const [expectedNote, setExpected] = useState<number | undefined>()
+  const [noteStates,   setNStates]  = useState<NS[]>([])
+  const [fbText,       setFbText]   = useState('')
+  const [fbColor,      setFbColor]  = useState('')
+  const [showFb,       setShowFb]   = useState(false)
+  const [scoreResult,  setScore]    = useState<any>(null)
+  const [unlocked,     setUnlocked] = useState(false)
+  const [hits,         setHits]     = useState(0)
   const fbTimer = useRef<number>()
 
-  const submitMut = useMutation({ mutationFn: scoreService.submit, onSuccess:({data})=>{ setUnlocked(data.data.unlocked); toast.success(`+${data.data.xpGained} XP!`) } })
+  const submitMut = useMutation({
+    mutationFn: scoreService.submit,
+    onSuccess: ({ data }) => {
+      setUnlocked(data.data.unlocked)
+      toast.success(`+${data.data.xpGained} XP!`)
+    }
+  })
 
-  useEffect(()=>{ if(lesson){ setLesson(lesson); setBPM(lesson.bpm); setNStates(lesson.notes.map(()=>'pending')); setExpected(lesson.notes[0]?.note) } },[lesson])
-  useEffect(()=>{ if(sessionState==='playing'&&lesson){ setExpected(lesson.notes[noteIndex]?.note); setNStates(p=>{ const n=[...p]; n[noteIndex]='active'; return n }) } },[noteIndex,sessionState])
-  useEffect(()=>{ if(sessionState==='finished'){ const r=getScore(); setScore(r); if(lessonId) submitMut.mutate({lessonId,bpmPlayed:currentBPM,...r}) } },[sessionState])
+  useEffect(() => {
+    if (lesson) {
+      setLesson(lesson)
+      setBPM(lesson.bpm)
+      setNStates(lesson.notes.map(() => 'pending'))
+      setExpected(lesson.notes[0]?.note)
+      setHits(0)
+    }
+  }, [lesson])
 
-  const flash=(t:string,c:string)=>{ setFbText(t); setFbColor(c); setShowFb(true); clearTimeout(fbTimer.current); fbTimer.current=window.setTimeout(()=>setShowFb(false),500) }
+  useEffect(() => {
+    if (sessionState === 'playing' && lesson) {
+      setExpected(lesson.notes[noteIndex]?.note)
+      setNStates(p => {
+        const n = [...p]
+        n[noteIndex] = 'active'
+        return n
+      })
+    }
+  }, [noteIndex, sessionState])
 
-  const onNoteOn=useCallback((midi:number)=>{
-    setActive(p=>new Set(p).add(midi))
-    if(sessionState!=='playing') return
-    const r=handleNoteOn(midi)
-    if(r==='hit') {
-      setNStates(p=>{ const n=[...p]; n[noteIndex]='hit'; return n })
-      flash('PERFECT!','#a855f7')
-    } else if(r==='wrong') { flash('✗','#ef4444') }
-  },[sessionState,noteIndex,handleNoteOn])
+  useEffect(() => {
+    if (sessionState === 'finished') {
+      const r = getScore()
+      setScore(r)
+      if (lessonId) submitMut.mutate({ lessonId, bpmPlayed: currentBPM, ...r })
+    }
+  }, [sessionState])
 
-  const onNoteOff=useCallback((midi:number)=>setActive(p=>{ const n=new Set(p); n.delete(midi); return n }),[])
+  const flash = (t: string, c: string) => {
+    setFbText(t); setFbColor(c); setShowFb(true)
+    clearTimeout(fbTimer.current)
+    fbTimer.current = window.setTimeout(() => setShowFb(false), 500)
+  }
+
+  const onNoteOn = useCallback((midi: number) => {
+    setActive(p => new Set(p).add(midi))
+    if (sessionState !== 'playing') return
+    const r = handleNoteOn(midi)
+    if (r === 'hit') {
+      setNStates(p => { const n = [...p]; n[noteIndex] = 'hit'; return n })
+      setHits(h => h + 1)
+      flash('PERFECT!', '#a855f7')
+    } else if (r === 'wrong') {
+      flash('✗', '#ef4444')
+    }
+  }, [sessionState, noteIndex, handleNoteOn])
+
+  const onNoteOff = useCallback((midi: number) => {
+    setActive(p => { const n = new Set(p); n.delete(midi); return n })
+  }, [])
+
   const { connected, deviceName } = useMidi({ onNoteOn, onNoteOff })
 
-  if(isLoading) return <LoadingSpinner fullScreen/>
-  if(!lesson)   return <div className="text-center py-20">Lesson not found</div>
+  if (isLoading) return <LoadingSpinner fullScreen />
+  if (!lesson)   return <div className="text-center py-20">Lesson not found</div>
 
-  if(sessionState==='finished'&&scoreResult) return (
-    <ScoreBoard result={scoreResult} lessonName={lesson.name} feedback={getFeedback(scoreResult)} unlocked={unlocked}
-      onRetry={()=>{ restartSession(); setNStates(lesson.notes.map(()=>'pending')) }}
-      onNext={()=>nav(ROUTES.LESSONS)} onHome={()=>nav(ROUTES.HOME)}/>
-  )
+  if (sessionState === 'finished' && scoreResult) {
+    return (
+      <ScoreBoard
+        result={scoreResult}
+        lessonName={lesson.name}
+        feedback={getFeedback(scoreResult)}
+        unlocked={unlocked}
+        onRetry={() => {
+          restartSession()
+          setNStates(lesson.notes.map(() => 'pending'))
+          setHits(0)
+        }}
+        onNext={() => nav(ROUTES.LESSONS)}
+        onHome={() => nav(ROUTES.HOME)}
+      />
+    )
+  }
+
+  // ── Render correct instrument ─────────────────────────────
+  function renderInstrument() {
+    switch (lesson!.instrument) {
+      case 'guitar':
+        return (
+          <GuitarFretboard
+            activeNotes={activeNotes}
+            expectedNote={expectedNote}
+            onFretPress={midi => onNoteOn(midi)}
+          />
+        )
+      case 'drums':
+        return (
+          <DrumKit
+            activeNotes={activeNotes}
+            expectedNote={expectedNote}
+            onPadPress={midi => onNoteOn(midi)}
+            onPadRelease={midi => onNoteOff(midi)}
+          />
+        )
+      case 'piano':
+      default:
+        return (
+          <PianoRoll
+            activeNotes={activeNotes}
+            expectedNote={expectedNote}
+            onKeyPress={midi => onNoteOn(midi)}
+            onKeyRelease={midi => onNoteOff(midi)}
+          />
+        )
+    }
+  }
+
+  // ── Current note info ─────────────────────────────────────
+  const currentNote   = lesson.notes[noteIndex]
+  const totalNonRests = lesson.notes.filter(n => !n.isRest).length
+  const accuracy      = totalNonRests > 0
+    ? Math.round((hits / totalNonRests) * 100)
+    : 0
+
+  // ── Stats bar — NO keyboard key labels ────────────────────
+  const statItems = [
+    {
+      label: 'Instrument',
+      value: lesson.instrument.charAt(0).toUpperCase() + lesson.instrument.slice(1),
+      icon:  lesson.instrument === 'piano'  ? '🎹'
+           : lesson.instrument === 'guitar' ? '🎸' : '🥁',
+      color: '#a855f7',
+    },
+    {
+      label: 'Grade / Difficulty',
+      value: `Grade ${(lesson as any).grade || 1} · ${lesson.difficulty}`,
+      icon:  '📚',
+      color: '#3b82f6',
+    },
+    {
+      label: 'Current Note',
+      // Show scientific pitch name e.g. C4, D#4, G3
+      value: currentNote
+        ? currentNote.isRest
+          ? 'Rest'
+          : midiToScientific(currentNote.note)
+        : '—',
+      icon:  '🎵',
+      color: '#10b981',
+    },
+    {
+      label: 'Progress',
+      value: sessionState === 'idle'
+        ? `${lesson.notes.length} notes · ${lesson.bpm} BPM`
+        : `${noteIndex + 1} / ${lesson.notes.length} · ${accuracy}%`,
+      icon:  '📊',
+      color: '#f59e0b',
+    },
+  ]
 
   return (
     <div className="flex flex-col min-h-[calc(100vh-57px)]">
-      {sessionState==='countdown'&&<Countdown bpm={currentBPM} onComplete={()=>{}}/>}
-      <FeedbackFlash text={fbText} color={fbColor} show={showFb}/>
-      <div className="flex items-center gap-4 px-5 py-3 bg-surface border-b border-slate-800">
-        <Button variant="ghost" size="sm" onClick={()=>nav(ROUTES.LESSONS)}>← Lessons</Button>
-        <h2 className="font-bold text-lg">{lesson.name}</h2>
-        <div className="ml-auto flex items-center gap-3">
-          <div className={`flex items-center gap-2 text-xs px-3 py-1 rounded-full border ${connected?'border-success text-success':'border-slate-700 text-slate-500'}`}>
-            <span className={`w-2 h-2 rounded-full ${connected?'bg-success animate-pulse':'bg-slate-600'}`}/>
-            {connected?deviceName||'MIDI Connected':'Keyboard Mode'}
+      {sessionState === 'countdown' && (
+        <Countdown bpm={currentBPM} onComplete={() => {}} />
+      )}
+      <FeedbackFlash text={fbText} color={fbColor} show={showFb} />
+
+      {/* ── Top bar ────────────────────────────────────────── */}
+      <div style={{
+        display:      'flex',
+        alignItems:   'center',
+        gap:          16,
+        padding:      '12px 20px',
+        background:   'var(--surface)',
+        borderBottom: '1px solid var(--border)',
+        flexWrap:     'wrap',
+      }}>
+        <Button variant="ghost" size="sm" onClick={() => nav(ROUTES.LESSONS)}>
+          ← Lessons
+        </Button>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 22 }}>
+            {lesson.instrument === 'piano'  ? '🎹'
+           : lesson.instrument === 'guitar' ? '🎸' : '🥁'}
+          </span>
+          <h2 style={{ fontWeight: 700, fontSize: 16 }}>
+            {lesson.name}
+          </h2>
+        </div>
+
+        {/* Grade badge */}
+        <span style={{
+          padding:      '3px 10px',
+          borderRadius: 999,
+          fontSize:     12,
+          fontWeight:   700,
+          background:   'rgba(168,85,247,0.15)',
+          color:        '#a855f7',
+          border:       '1px solid rgba(168,85,247,0.3)',
+        }}>
+          Grade {(lesson as any).grade || 1}
+        </span>
+
+        <div style={{
+          marginLeft: 'auto',
+          display:    'flex',
+          alignItems: 'center',
+          gap:        12,
+        }}>
+          {/* MIDI / Keyboard status */}
+          <div style={{
+            display:      'flex',
+            alignItems:   'center',
+            gap:          6,
+            fontSize:     12,
+            padding:      '4px 12px',
+            borderRadius: 999,
+            border:       `1px solid ${connected ? '#10b981' : 'var(--border)'}`,
+            color:        connected ? '#10b981' : 'var(--text-sub)',
+          }}>
+            <span style={{
+              width:        8,
+              height:       8,
+              borderRadius: '50%',
+              background:   connected ? '#10b981' : '#475569',
+              boxShadow:    connected ? '0 0 6px #10b981' : 'none',
+            }} />
+            {connected ? deviceName || 'MIDI Connected' : 'Keyboard Mode'}
           </div>
-          <span className="text-accent-light font-bold text-sm">♩ {currentBPM} BPM</span>
+
+          {/* BPM */}
+          <span style={{
+            color:        '#a855f7',
+            fontWeight:   700,
+            fontSize:     14,
+            background:   'rgba(168,85,247,0.1)',
+            padding:      '4px 12px',
+            borderRadius: 8,
+            border:       '1px solid rgba(168,85,247,0.2)',
+          }}>
+            ♩ {currentBPM} BPM
+          </span>
         </div>
       </div>
-      <div className="grid grid-cols-4 border-b border-slate-800">
-        {[{l:'Lesson',v:lesson.name},{l:'Difficulty',v:lesson.difficulty},{l:'Note',v:`${noteIndex+1}/${lesson.notes.length}`},{l:'Keys',v:'A-K = Notes'}].map(i=>(
-          <div key={i.l} className="py-3 px-4 border-r border-slate-800 last:border-0 text-center">
-            <p className="text-xs text-slate-500 uppercase tracking-wide">{i.l}</p>
-            <p className="font-semibold text-sm mt-0.5 capitalize">{i.v}</p>
+
+      {/* ── Stats bar — uses scientific pitch names ─────────── */}
+      <div style={{
+        display:               'grid',
+        gridTemplateColumns:   'repeat(4, 1fr)',
+        borderBottom:          '1px solid var(--border)',
+        background:            'var(--surface2)',
+      }}>
+        {statItems.map((item, i) => (
+          <div key={item.label} style={{
+            padding:     '10px 16px',
+            borderRight: i < statItems.length - 1
+              ? '1px solid var(--border)'
+              : 'none',
+            textAlign:   'center',
+            display:     'flex',
+            flexDirection: 'column',
+            alignItems:  'center',
+            gap:         3,
+          }}>
+            <p style={{
+              fontSize:      10,
+              color:         'var(--text-sub)',
+              textTransform: 'uppercase',
+              letterSpacing: '0.06em',
+              fontWeight:    600,
+            }}>
+              {item.label}
+            </p>
+            <p style={{
+              fontWeight: 700,
+              fontSize:   13,
+              color:      item.color,
+            }}>
+              {item.icon} {item.value}
+            </p>
           </div>
         ))}
       </div>
-      <div className="flex-1 p-5 bg-surface2 overflow-x-auto">
-        <NoteSequence notes={lesson.notes} activeIdx={noteIndex} states={noteStates.map(s=>({status:s}))}/>
+
+      {/* ── Note sequence ───────────────────────────────────── */}
+      <div style={{
+        flex:       1,
+        padding:    20,
+        background: 'var(--surface2)',
+        overflowX:  'auto',
+        minHeight:  120,
+      }}>
+        <NoteSequence
+          notes={lesson.notes}
+          activeIdx={noteIndex}
+          states={noteStates.map(s => ({ status: s }))}
+        />
       </div>
-      <div className="border-t border-slate-800">
-        {lesson.instrument==='drums'?<DrumPad activeNotes={activeNotes} expectedNote={expectedNote}/>:<PianoRoll activeNotes={activeNotes} expectedNote={expectedNote}/>}
-      </div>
-      <div className="flex items-center justify-between gap-4 px-5 py-4 bg-surface border-t border-slate-800 flex-wrap">
-        <div className="flex items-center gap-3">
-          <button onClick={toggleMetronome} className={`btn-secondary text-sm ${metronomeOn?'border-success text-success':''}`}>🎵 Metro: {metronomeOn?'ON':'OFF'}</button>
-          <div className="flex items-center gap-2">
-            <button className="btn-secondary w-8 h-8 p-0 flex items-center justify-center text-lg" onClick={()=>adjustBPM(-5)}>−</button>
-            <input type="range" min={40} max={200} value={currentBPM} onChange={e=>setBPM(Number(e.target.value))} className="w-28 accent-accent-light"/>
-            <button className="btn-secondary w-8 h-8 p-0 flex items-center justify-center text-lg" onClick={()=>adjustBPM(5)}>+</button>
+
+      {/* ── Instrument visual ──────────────────────────────── */}
+      {renderInstrument()}
+
+      {/* ── Keyboard guide ─────────────────────────────────── */}
+      <KeyboardGuide instrument={lesson.instrument as any} />
+
+      {/* ── Controls ───────────────────────────────────────── */}
+      <div style={{
+        display:        'flex',
+        alignItems:     'center',
+        justifyContent: 'space-between',
+        padding:        '14px 20px',
+        background:     'var(--surface)',
+        borderTop:      '1px solid var(--border)',
+        flexWrap:       'wrap',
+        gap:            12,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <button
+            onClick={toggleMetronome}
+            style={{
+              padding:      '8px 14px',
+              borderRadius: 8,
+              border:       `1px solid ${metronomeOn ? '#10b981' : 'var(--border)'}`,
+              background:   metronomeOn
+                ? 'rgba(16,185,129,0.1)'
+                : 'var(--surface2)',
+              color:        metronomeOn ? '#10b981' : 'var(--text-dim)',
+              cursor:       'pointer',
+              fontSize:     13,
+              fontWeight:   600,
+              transition:   'all 0.2s',
+            }}
+          >
+            🎵 Metronome: {metronomeOn ? 'ON' : 'OFF'}
+          </button>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <button
+              onClick={() => adjustBPM(-5)}
+              style={{
+                width:          32,
+                height:         32,
+                borderRadius:   8,
+                border:         '1px solid var(--border)',
+                background:     'var(--surface2)',
+                color:          'var(--text)',
+                cursor:         'pointer',
+                fontSize:       18,
+                display:        'flex',
+                alignItems:     'center',
+                justifyContent: 'center',
+              }}
+            >−</button>
+            <input
+              type="range"
+              min={40} max={200}
+              value={currentBPM}
+              onChange={e => setBPM(Number(e.target.value))}
+              style={{ width: 100, accentColor: '#a855f7' }}
+            />
+            <button
+              onClick={() => adjustBPM(5)}
+              style={{
+                width:          32,
+                height:         32,
+                borderRadius:   8,
+                border:         '1px solid var(--border)',
+                background:     'var(--surface2)',
+                color:          'var(--text)',
+                cursor:         'pointer',
+                fontSize:       18,
+                display:        'flex',
+                alignItems:     'center',
+                justifyContent: 'center',
+              }}
+            >+</button>
+            <span style={{
+              fontSize:   13,
+              color:      'var(--text-sub)',
+              minWidth:   60,
+            }}>
+              {currentBPM} BPM
+            </span>
           </div>
         </div>
-        <div className="flex gap-3">
-          <Button variant="secondary" onClick={()=>{ restartSession(); setNStates(lesson.notes.map(()=>'pending')) }}>↺ Restart</Button>
-          <Button onClick={startSession} disabled={sessionState!=='idle'}>▶ Start (3-2-1)</Button>
+
+        <div style={{ display: 'flex', gap: 10 }}>
+          <Button
+            variant="secondary"
+            onClick={() => {
+              restartSession()
+              setNStates(lesson.notes.map(() => 'pending'))
+              setHits(0)
+            }}
+          >
+            ↺ Restart
+          </Button>
+          <Button
+            onClick={startSession}
+            disabled={sessionState !== 'idle'}
+          >
+            ▶ Start (3-2-1)
+          </Button>
         </div>
       </div>
     </div>

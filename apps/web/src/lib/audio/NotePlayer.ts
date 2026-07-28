@@ -1,28 +1,42 @@
-import { midiToFreq } from '@/constants/midiNotes'
-class NP {
-  private ctx:AudioContext|null=null
-  getCtx() {
-    if(!this.ctx) this.ctx=new (window.AudioContext||(window as any).webkitAudioContext)()
-    return this.ctx
+import {
+  playPianoNote,
+  attackPianoNote,
+  releasePianoNote,
+  playDrumHit,
+  preloadSounds,
+  isPianoLoaded,
+  isDrumsLoaded,
+} from './SoundEngine'
+
+class NotePlayerClass {
+
+  async preload() {
+    await preloadSounds()
   }
-  play(midi:number,dur=.4,vol=.4) {
-    const ctx=this.getCtx(); if(ctx.state==='suspended') ctx.resume()
-    const o=ctx.createOscillator(),g=ctx.createGain()
-    o.connect(g);g.connect(ctx.destination)
-    o.type='triangle'; o.frequency.value=midiToFreq(midi)
-    g.gain.setValueAtTime(vol,ctx.currentTime)
-    g.gain.exponentialRampToValueAtTime(.001,ctx.currentTime+dur)
-    o.start(ctx.currentTime); o.stop(ctx.currentTime+dur)
+
+  // Piano / Guitar — short tap (for practice feedback)
+  play(midi: number, duration = 1.5, volume = 0.8) {
+    const dur = duration > 1 ? '2n' : duration > 0.5 ? '4n' : '8n'
+    playPianoNote(midi, dur, volume)
   }
-  playDrum(midi:number) {
-    const ctx=this.getCtx(); if(ctx.state==='suspended') ctx.resume()
-    const buf=ctx.createBuffer(1,ctx.sampleRate*.1,ctx.sampleRate)
-    const d=buf.getChannelData(0); for(let i=0;i<d.length;i++) d[i]=Math.random()*2-1
-    const src=ctx.createBufferSource(),g=ctx.createGain(),f=ctx.createBiquadFilter()
-    src.buffer=buf; f.type=midi===36?'lowpass':'highpass'; f.frequency.value=midi===36?200:3000
-    src.connect(f);f.connect(g);g.connect(ctx.destination)
-    g.gain.setValueAtTime(.6,ctx.currentTime); g.gain.exponentialRampToValueAtTime(.001,ctx.currentTime+.15)
-    src.start()
+
+  // Piano key held down
+  attack(midi: number, volume = 0.8) {
+    attackPianoNote(midi, volume)
   }
+
+  // Piano key released
+  stop(midi: number) {
+    releasePianoNote(midi)
+  }
+
+  // Drum hit
+  playDrum(midi: number) {
+    playDrumHit(midi)
+  }
+
+  isPianoReady(): boolean { return isPianoLoaded() }
+  isDrumsReady(): boolean { return isDrumsLoaded() }
 }
-export const NotePlayer = new NP()
+
+export const NotePlayer = new NotePlayerClass()
