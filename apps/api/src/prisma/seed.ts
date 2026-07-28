@@ -2,49 +2,452 @@ import { PrismaClient } from '@prisma/client'
 
 const prisma = new PrismaClient()
 
-// ── MIDI Note Map ─────────────────────────────────────────────
+// ── MIDI note map ─────────────────────────────────────────────
 const N: Record<string, number> = {
-  // Octave 2
-  A2:45, B2:47,
-  // Octave 3
+  A0:21, B0:23,
+  C1:24, D1:26, E1:28, F1:29, G1:31, A1:33, B1:35,
+  C2:36, D2:38, E2:40, F2:41, G2:43, A2:45, B2:47,
   C3:48, D3:50, E3:52, F3:53, G3:55, A3:57, B3:59,
   Cs3:49, Ds3:51, Fs3:54, Gs3:56, As3:58,
-  // Octave 4
   C4:60, D4:62, E4:64, F4:65, G4:67, A4:69, B4:71,
   Cs4:61, Ds4:63, Fs4:66, Gs4:68, As4:70,
-  // Octave 5
   C5:72, D5:74, E5:76, F5:77, G5:79, A5:81, B5:83,
   Cs5:73, Ds5:75, Fs5:78, Gs5:80, As5:82,
-  // Octave 6
-  C6:84,
+  C6:84, D6:86, E6:88, F6:89, G6:91, A6:93, B6:95,
+  Cs6:85, Ds6:87, Fs6:90, Gs6:92, As6:94,
+  C7:96, D7:98, E7:100,
 }
 
-// ── Drum Map ──────────────────────────────────────────────────
-const D: Record<string, number> = {
-  KICK:36, SNARE:38, HIHAT:42, OHAT:46,
-  TOM_HI:50, TOM_MD:47, TOM_LO:45,
-  CRASH:49, RIDE:51, RIMSHOT:37,
-}
-
-const DRUM_NAMES: Record<number, string> = {
-  36:'KICK', 38:'SNARE', 42:'HH', 46:'OHH',
-  50:'T.HI', 47:'T.MD', 45:'T.LO',
-  49:'CRSH', 51:'RIDE', 37:'RIM',
-}
-
-// ── Helpers ───────────────────────────────────────────────────
 const midiName = (m: number) => {
   if (m === 0) return '—'
   const n = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B']
   return `${n[m % 12]}${Math.floor(m / 12) - 1}`
 }
 
-function seq(pairs: [number, number, string?][], dur = 1) {
-  return pairs.map(([note, beat, label]) => ({
+function seq(pairs: [number, number][], dur = 1) {
+  return pairs.map(([note, beat]) => ({
     note, beat, duration: dur,
-    label: label || midiName(note),
+    label: midiName(note),
     isRest: note === 0,
   }))
+}
+
+// ── Build a scale sequence ─────────────────────────────────────
+// intervals: array of semitone steps e.g. [2,2,1,2,2,2,1] for major
+function buildScale(root: number, intervals: number[]): number[] {
+  const notes = [root]
+  let cur = root
+  for (const step of intervals) {
+    cur += step
+    notes.push(cur)
+  }
+  return notes
+}
+
+// ── Scale patterns ─────────────────────────────────────────────
+const MAJOR        = [2,2,1,2,2,2,1]
+const NATURAL_MIN  = [2,1,2,2,1,2,2]
+const HARMONIC_MIN = [2,1,2,2,1,3,1]
+const MELODIC_MIN  = [2,1,2,2,2,2,1]  // ascending (descending = natural)
+
+// Modes (starting from their root)
+const DORIAN     = [2,1,2,2,2,1,2]
+const PHRYGIAN   = [1,2,2,2,1,2,2]
+const LYDIAN     = [2,2,2,1,2,2,1]
+const MIXOLYDIAN = [2,2,1,2,2,1,2]
+const LOCRIAN    = [1,2,2,1,2,2,2]
+
+// ── All 12 roots (starting MIDI notes) ────────────────────────
+const ROOTS_3OCT: Record<string, number> = {
+  C: N.C3, G: N.G3, D: N.D3, A: N.A3, E: N.E3, B: N.B3,
+  'F#': N.Fs3, Db: N.Cs3, Ab: N.Gs3, Eb: N.Ds3, Bb: N.As3, F: N.F3,
+}
+
+// ── Build all-scales sequence ──────────────────────────────────
+function allScalesSeq(intervals: number[], octaveStart = 3): any[] {
+  const keys = ['C','G','D','A','E','B','F#','Db','Ab','Eb','Bb','F']
+  const rootMidi = keys.map(k => ROOTS_3OCT[k])
+  const notes: any[] = []
+  let beat = 1
+
+  keys.forEach((key, ki) => {
+    const root  = rootMidi[ki]
+    const scale = buildScale(root, intervals)
+
+    // Up
+    scale.forEach(note => {
+      notes.push({ note, beat, duration: 1, label: midiName(note), isRest: false })
+      beat++
+    })
+    // Down (exclude top note already played)
+    ;[...scale].reverse().slice(1).forEach(note => {
+      notes.push({ note, beat, duration: 1, label: midiName(note), isRest: false })
+      beat++
+    })
+
+    // Rest between keys
+    notes.push({ note: 0, beat, duration: 1, label: '—', isRest: true })
+    beat++
+  })
+
+  return notes
+}
+
+// ── Build arpeggio sequence ────────────────────────────────────
+// type: 'major' | 'minor' | 'dom7' | 'maj7' | 'min7' | 'dim7'
+function arpeggioNotes(root: number, type: string): number[] {
+  switch (type) {
+    case 'major':  return [root, root+4, root+7, root+12, root+7, root+4, root]
+    case 'minor':  return [root, root+3, root+7, root+12, root+7, root+3, root]
+    case 'dom7':   return [root, root+4, root+7, root+10, root+7, root+4, root]
+    case 'maj7':   return [root, root+4, root+7, root+11, root+7, root+4, root]
+    case 'min7':   return [root, root+3, root+7, root+10, root+7, root+3, root]
+    case 'dim7':   return [root, root+3, root+6, root+9,  root+6, root+3, root]
+    case 'aug':    return [root, root+4, root+8, root+12, root+8, root+4, root]
+    default:       return [root, root+4, root+7, root+12]
+  }
+}
+
+function allArpeggiosSeq(type: string): any[] {
+  const keys  = ['C','G','D','A','E','B','F#','Db','Ab','Eb','Bb','F']
+  const notes: any[] = []
+  let beat = 1
+
+  keys.forEach((key, ki) => {
+    const root  = ROOTS_3OCT[key]
+    const arps  = arpeggioNotes(root, type)
+    arps.forEach(note => {
+      notes.push({ note, beat, duration: 0.5, label: midiName(note), isRest: false })
+      beat += 0.5
+    })
+    notes.push({ note: 0, beat, duration: 1, label: '—', isRest: true })
+    beat++
+  })
+
+  return notes
+}
+
+// ── Build chord progression ────────────────────────────────────
+// Returns broken chords in sequence
+// inversion: 0=root, 1=first, 2=second
+function chordNotes(root: number, quality: string, inversion = 0): number[] {
+  let notes: number[]
+  switch (quality) {
+    case 'major': notes = [root, root+4, root+7]; break
+    case 'minor': notes = [root, root+3, root+7]; break
+    case 'dom7':  notes = [root, root+4, root+7, root+10]; break
+    case 'maj7':  notes = [root, root+4, root+7, root+11]; break
+    case 'min7':  notes = [root, root+3, root+7, root+10]; break
+    case 'dim':   notes = [root, root+3, root+6]; break
+    case 'aug':   notes = [root, root+4, root+8]; break
+    default:      notes = [root, root+4, root+7]
+  }
+
+  // Apply inversion by shifting bottom notes up an octave
+  for (let i = 0; i < inversion; i++) {
+    notes[i] += 12
+  }
+  return notes.sort((a, b) => a - b)
+}
+
+// I-IV-V-I progression in all keys, broken chords
+function chordProgressionSeq(inversion = 0): any[] {
+  // Degrees for major: I=0, IV=5, V=7
+  const keys  = ['C','G','D','A','E','B','F#','Db','Ab','Eb','Bb','F']
+  const steps = [0, 5, 7, 0]  // I-IV-V-I
+  const labels = ['I','IV','V','I']
+  const notes: any[] = []
+  let beat = 1
+
+  keys.forEach((key, ki) => {
+    const tonic = ROOTS_3OCT[key]
+    steps.forEach((step, si) => {
+      const root       = tonic + step
+      const chordTones = chordNotes(root, 'major', inversion)
+
+      // Play chord as broken arpeggio
+      chordTones.forEach((note, ni) => {
+        notes.push({
+          note,
+          beat,
+          duration: 0.5,
+          label:    `${labels[si]}${inversion > 0 ? ` inv${inversion}` : ''}: ${midiName(note)}`,
+          isRest:   false,
+        })
+        beat += 0.5
+      })
+      beat += 0.5  // small gap between chords
+    })
+
+    // Rest between keys
+    notes.push({ note: 0, beat, duration: 1, label: '—', isRest: true })
+    beat++
+  })
+
+  return notes
+}
+
+// ── ii-V-I progression (jazz) ──────────────────────────────────
+function jazzProgressionSeq(inversion = 0): any[] {
+  const keys  = ['C','G','D','A','E','F','Bb','Eb']
+  const notes: any[] = []
+  let beat = 1
+
+  keys.forEach(key => {
+    const tonic   = ROOTS_3OCT[key]
+    // ii-V-I: minor7 on 2, dom7 on 5, maj7 on root
+    const chords = [
+      { root: tonic + 2, quality: 'min7',  label: 'ii7' },
+      { root: tonic + 7, quality: 'dom7',  label: 'V7'  },
+      { root: tonic,     quality: 'maj7',  label: 'Imaj7' },
+    ]
+
+    chords.forEach(ch => {
+      const tones = chordNotes(ch.root, ch.quality, inversion)
+      tones.forEach(note => {
+        notes.push({
+          note, beat, duration: 0.5,
+          label: `${ch.label}: ${midiName(note)}`,
+          isRest: false,
+        })
+        beat += 0.5
+      })
+      beat += 0.5
+    })
+
+    notes.push({ note: 0, beat, duration: 1, label: '—', isRest: true })
+    beat++
+  })
+
+  return notes
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  LESSON DEFINITIONS
+// ═══════════════════════════════════════════════════════════════
+const pianoLessons = [
+
+  // ── GRADE 1: Foundation ──────────────────────────────────────
+  {
+    slug:'p-g1-1', order:1, instrument:'piano', grade:1,
+    name:'Grade 1 — Middle C Position',
+    description:'Five finger exercise on C D E F G. Foundation of all piano playing.',
+    difficulty:'easy', bpm:60, xpReward:50, requiredPlan:'FREE',
+    notes: seq([[N.C4,1],[N.D4,2],[N.E4,3],[N.F4,4],[N.G4,5],[N.F4,6],[N.E4,7],[N.D4,8],[N.C4,9]]),
+  },
+  {
+    slug:'p-g1-2', order:2, instrument:'piano', grade:1,
+    name:'Grade 1 — C Major Scale',
+    description:'C major scale one octave up and down.',
+    difficulty:'easy', bpm:66, xpReward:75, requiredPlan:'FREE',
+    notes: seq([[N.C4,1],[N.D4,2],[N.E4,3],[N.F4,4],[N.G4,5],[N.A4,6],[N.B4,7],[N.C5,8],[N.B4,9],[N.A4,10],[N.G4,11],[N.F4,12],[N.E4,13],[N.D4,14],[N.C4,15]]),
+  },
+  {
+    slug:'p-g1-3', order:3, instrument:'piano', grade:1,
+    name:'Grade 1 — G Major Scale',
+    description:'G major scale with F#. One octave.',
+    difficulty:'easy', bpm:66, xpReward:75, requiredPlan:'FREE',
+    notes: seq([[N.G3,1],[N.A3,2],[N.B3,3],[N.C4,4],[N.D4,5],[N.E4,6],[N.Fs4,7],[N.G4,8],[N.Fs4,9],[N.E4,10],[N.D4,11],[N.C4,12],[N.B3,13],[N.A3,14],[N.G3,15]]),
+  },
+  {
+    slug:'p-g1-4', order:4, instrument:'piano', grade:1,
+    name:'Grade 1 — A Natural Minor Scale',
+    description:'A natural minor scale. Relative minor of C major.',
+    difficulty:'easy', bpm:66, xpReward:75, requiredPlan:'FREE',
+    notes: seq([[N.A3,1],[N.B3,2],[N.C4,3],[N.D4,4],[N.E4,5],[N.F4,6],[N.G4,7],[N.A4,8],[N.G4,9],[N.F4,10],[N.E4,11],[N.D4,12],[N.C4,13],[N.B3,14],[N.A3,15]]),
+  },
+  {
+    slug:'p-g1-5', order:5, instrument:'piano', grade:1,
+    name:'Grade 1 — C Major Arpeggio',
+    description:'C-E-G arpeggio ascending and descending.',
+    difficulty:'easy', bpm:72, xpReward:100, requiredPlan:'FREE',
+    notes: seq([[N.C4,1],[N.E4,2],[N.G4,3],[N.C5,4],[N.G4,5],[N.E4,6],[N.C4,7]]),
+  },
+  {
+    slug:'p-g1-6', order:6, instrument:'piano', grade:1,
+    name:'Grade 1 — Melody in C',
+    description:'Simple melody using C major notes at steady Andante tempo.',
+    difficulty:'easy', bpm:76, xpReward:100, requiredPlan:'FREE',
+    notes: seq([[N.E4,1],[N.G4,2],[N.A4,3],[N.G4,4],[N.E4,5],[N.C4,6],[N.D4,7],[N.E4,8],[N.F4,9],[N.E4,10],[N.D4,11],[N.C4,12]]),
+  },
+
+  // ── GRADE 2: Scales ───────────────────────────────────────────
+  {
+    slug:'p-g2-major', order:7, instrument:'piano', grade:2,
+    name:'Grade 2 — All 12 Major Scales',
+    description:'All 12 major scales in circle of fifths order. C G D A E B F# Db Ab Eb Bb F.',
+    difficulty:'medium', bpm:72, xpReward:200, requiredPlan:'BASIC',
+    notes: allScalesSeq(MAJOR),
+  },
+  {
+    slug:'p-g2-natmin', order:8, instrument:'piano', grade:2,
+    name:'Grade 2 — All 12 Natural Minor Scales',
+    description:'All 12 natural minor scales. W-H-W-W-H-W-W pattern.',
+    difficulty:'medium', bpm:72, xpReward:200, requiredPlan:'BASIC',
+    notes: allScalesSeq(NATURAL_MIN),
+  },
+  {
+    slug:'p-g2-harmin', order:9, instrument:'piano', grade:2,
+    name:'Grade 2 — All 12 Harmonic Minor Scales',
+    description:'Harmonic minor — raised 7th creates leading tone. W-H-W-W-H-Aug2-H.',
+    difficulty:'medium', bpm:70, xpReward:225, requiredPlan:'BASIC',
+    notes: allScalesSeq(HARMONIC_MIN),
+  },
+  {
+    slug:'p-g2-melmin', order:10, instrument:'piano', grade:2,
+    name:'Grade 2 — All 12 Melodic Minor Scales',
+    description:'Melodic minor ascending — raised 6th and 7th. Classical and jazz foundation.',
+    difficulty:'medium', bpm:70, xpReward:225, requiredPlan:'BASIC',
+    notes: allScalesSeq(MELODIC_MIN),
+  },
+
+  // ── GRADE 3: Modes ────────────────────────────────────────────
+  {
+    slug:'p-g3-dorian', order:11, instrument:'piano', grade:3,
+    name:'Grade 3 — Dorian Mode (All Keys)',
+    description:'Dorian mode — minor with raised 6th. D Dorian = D E F G A B C D. Used in jazz and folk.',
+    difficulty:'medium', bpm:76, xpReward:250, requiredPlan:'BASIC',
+    notes: allScalesSeq(DORIAN),
+  },
+  {
+    slug:'p-g3-phrygian', order:12, instrument:'piano', grade:3,
+    name:'Grade 3 — Phrygian Mode (All Keys)',
+    description:'Phrygian mode — minor with b2. Flamenco and metal flavour. E F G A B C D E.',
+    difficulty:'medium', bpm:76, xpReward:250, requiredPlan:'BASIC',
+    notes: allScalesSeq(PHRYGIAN),
+  },
+  {
+    slug:'p-g3-lydian', order:13, instrument:'piano', grade:3,
+    name:'Grade 3 — Lydian Mode (All Keys)',
+    description:'Lydian mode — major with #4. Dreamy and bright sound. F G A B C D E F.',
+    difficulty:'medium', bpm:76, xpReward:250, requiredPlan:'BASIC',
+    notes: allScalesSeq(LYDIAN),
+  },
+  {
+    slug:'p-g3-mixolydian', order:14, instrument:'piano', grade:3,
+    name:'Grade 3 — Mixolydian Mode (All Keys)',
+    description:'Mixolydian — major with b7. Blues and rock foundation. G A B C D E F G.',
+    difficulty:'medium', bpm:80, xpReward:250, requiredPlan:'BASIC',
+    notes: allScalesSeq(MIXOLYDIAN),
+  },
+  {
+    slug:'p-g3-locrian', order:15, instrument:'piano', grade:3,
+    name:'Grade 3 — Locrian Mode (All Keys)',
+    description:'Locrian — diminished feel with b2 b5. B C D E F G A B. Most dissonant mode.',
+    difficulty:'hard', bpm:72, xpReward:300, requiredPlan:'BASIC',
+    notes: allScalesSeq(LOCRIAN),
+  },
+
+  // ── GRADE 4: Arpeggios ────────────────────────────────────────
+  {
+    slug:'p-g4-arp-major', order:16, instrument:'piano', grade:4,
+    name:'Grade 4 — Major Arpeggios (All Keys)',
+    description:'Major arpeggios — root, major 3rd, perfect 5th, octave. All 12 keys.',
+    difficulty:'hard', bpm:80, xpReward:300, requiredPlan:'PRO',
+    notes: allArpeggiosSeq('major'),
+  },
+  {
+    slug:'p-g4-arp-minor', order:17, instrument:'piano', grade:4,
+    name:'Grade 4 — Minor Arpeggios (All Keys)',
+    description:'Minor arpeggios — root, minor 3rd, perfect 5th. All 12 keys.',
+    difficulty:'hard', bpm:80, xpReward:300, requiredPlan:'PRO',
+    notes: allArpeggiosSeq('minor'),
+  },
+  {
+    slug:'p-g4-arp-dom7', order:18, instrument:'piano', grade:4,
+    name:'Grade 4 — Dominant 7th Arpeggios',
+    description:'Dominant 7th arpeggios — root M3 P5 b7. Essential for jazz and blues.',
+    difficulty:'hard', bpm:76, xpReward:325, requiredPlan:'PRO',
+    notes: allArpeggiosSeq('dom7'),
+  },
+  {
+    slug:'p-g4-arp-maj7', order:19, instrument:'piano', grade:4,
+    name:'Grade 4 — Major 7th Arpeggios',
+    description:'Major 7th arpeggios — root M3 P5 M7. Lush jazz sound.',
+    difficulty:'hard', bpm:76, xpReward:325, requiredPlan:'PRO',
+    notes: allArpeggiosSeq('maj7'),
+  },
+  {
+    slug:'p-g4-arp-min7', order:20, instrument:'piano', grade:4,
+    name:'Grade 4 — Minor 7th Arpeggios',
+    description:'Minor 7th arpeggios — root m3 P5 m7. Smooth jazz and soul.',
+    difficulty:'hard', bpm:76, xpReward:325, requiredPlan:'PRO',
+    notes: allArpeggiosSeq('min7'),
+  },
+  {
+    slug:'p-g4-arp-dim7', order:21, instrument:'piano', grade:4,
+    name:'Grade 4 — Diminished 7th Arpeggios',
+    description:'Diminished 7th — root m3 d5 d7. Tension and drama. Symmetrical pattern.',
+    difficulty:'hard', bpm:72, xpReward:350, requiredPlan:'PRO',
+    notes: allArpeggiosSeq('dim7'),
+  },
+  {
+    slug:'p-g4-arp-aug', order:22, instrument:'piano', grade:4,
+    name:'Grade 4 — Augmented Arpeggios',
+    description:'Augmented triads — root M3 A5. Mysterious and unstable sound.',
+    difficulty:'hard', bpm:72, xpReward:350, requiredPlan:'PRO',
+    notes: allArpeggiosSeq('aug'),
+  },
+
+  // ── GRADE 5: Chord Progressions ───────────────────────────────
+  {
+    slug:'p-g5-chord-root', order:23, instrument:'piano', grade:5,
+    name:'Grade 5 — I-IV-V-I Root Position (All Keys)',
+    description:'Classic I-IV-V-I chord progression in root position. All 12 keys. Broken chords.',
+    difficulty:'hard', bpm:72, xpReward:400, requiredPlan:'PRO',
+    notes: chordProgressionSeq(0),
+  },
+  {
+    slug:'p-g5-chord-inv1', order:24, instrument:'piano', grade:5,
+    name:'Grade 5 — I-IV-V-I First Inversion (All Keys)',
+    description:'I-IV-V-I in first inversion — third in the bass. Smoother voice leading.',
+    difficulty:'hard', bpm:70, xpReward:425, requiredPlan:'PRO',
+    notes: chordProgressionSeq(1),
+  },
+  {
+    slug:'p-g5-chord-inv2', order:25, instrument:'piano', grade:5,
+    name:'Grade 5 — I-IV-V-I Second Inversion (All Keys)',
+    description:'I-IV-V-I in second inversion — fifth in the bass. Creates tension and resolution.',
+    difficulty:'hard', bpm:68, xpReward:450, requiredPlan:'PRO',
+    notes: chordProgressionSeq(2),
+  },
+  {
+    slug:'p-g5-iivi-root', order:26, instrument:'piano', grade:5,
+    name:'Grade 5 — ii-V-I Jazz Progression Root Position',
+    description:'Jazz ii-V-I with 7th chords in root position. C G D A E F Bb Eb. Core jazz harmony.',
+    difficulty:'expert', bpm:72, xpReward:500, requiredPlan:'PRO',
+    notes: jazzProgressionSeq(0),
+  },
+  {
+    slug:'p-g5-iivi-inv1', order:27, instrument:'piano', grade:5,
+    name:'Grade 5 — ii-V-I Jazz First Inversion',
+    description:'ii-V-I with 7th chords in first inversion. Professional voice leading.',
+    difficulty:'expert', bpm:68, xpReward:550, requiredPlan:'PRO',
+    notes: jazzProgressionSeq(1),
+  },
+]
+
+// ── Guitar lessons (keep existing) ───────────────────────────
+const guitarLessons = [
+  { slug:'g-g1-1', order:1, instrument:'guitar', grade:1, name:'Grade 1 — Open String Exercise', description:'All 6 open strings played evenly.', difficulty:'easy', bpm:60, xpReward:50, requiredPlan:'FREE', notes: seq([[40,1],[45,2],[50,3],[55,4],[59,5],[64,6],[59,7],[55,8],[50,9],[45,10],[40,11]]) },
+  { slug:'g-g1-2', order:2, instrument:'guitar', grade:1, name:'Grade 1 — E Minor Chord Melody', description:'Simple melody using first position notes on E minor.', difficulty:'easy', bpm:63, xpReward:75, requiredPlan:'FREE', notes: seq([[64,1],[62,2],[59,3],[57,4],[55,5],[57,6],[59,7],[60,8],[62,9],[64,10],[62,11],[59,12],[55,13]]) },
+  { slug:'g-g1-3', order:3, instrument:'guitar', grade:1, name:'Grade 1 — C Major Position', description:'First position C major scale on guitar.', difficulty:'easy', bpm:66, xpReward:75, requiredPlan:'FREE', notes: seq([[48,1],[50,2],[52,3],[53,4],[55,5],[57,6],[59,7],[60,8],[59,9],[57,10],[55,11],[53,12],[52,13],[50,14],[48,15]]) },
+  { slug:'g-g2-1', order:4, instrument:'guitar', grade:2, name:'Grade 2 — A Major Scale', description:'A major scale first position.', difficulty:'easy', bpm:72, xpReward:100, requiredPlan:'BASIC', notes: seq([[45,1],[47,2],[49,3],[50,4],[52,5],[54,6],[56,7],[57,8],[56,9],[54,10],[52,11],[50,12],[49,13],[47,14],[45,15]]) },
+  { slug:'g-g2-2', order:5, instrument:'guitar', grade:2, name:'Grade 2 — E Minor Pentatonic', description:'E minor pentatonic box pattern.', difficulty:'easy', bpm:76, xpReward:100, requiredPlan:'BASIC', notes: seq([[40,1],[43,2],[45,3],[47,4],[50,5],[52,6],[50,7],[47,8],[45,9],[43,10],[40,11]]) },
+  { slug:'g-g3-1', order:6, instrument:'guitar', grade:3, name:'Grade 3 — Blues Scale', description:'E blues scale with b5 blue note.', difficulty:'medium', bpm:80, xpReward:175, requiredPlan:'BASIC', notes: seq([[40,1],[43,2],[45,3],[46,4],[47,5],[50,6],[52,7],[50,8],[47,9],[46,10],[45,11],[43,12],[40,13]]) },
+  { slug:'g-g3-2', order:7, instrument:'guitar', grade:3, name:'Grade 3 — Smoke on the Water', description:'Classic Deep Purple riff.', difficulty:'medium', bpm:90, xpReward:200, requiredPlan:'BASIC', notes: seq([[50,1],[53,2],[55,3],[50,5],[53,6],[56,7],[55,8],[50,10],[53,11],[55,12],[53,14],[50,16]]) },
+  { slug:'g-g4-1', order:8, instrument:'guitar', grade:4, name:'Grade 4 — B Minor Scale', description:'B minor scale in third position.', difficulty:'hard', bpm:88, xpReward:250, requiredPlan:'PRO', notes: seq([[47,1],[49,2],[50,3],[52,4],[54,5],[55,6],[57,7],[59,8],[57,9],[55,10],[54,11],[52,12],[50,13],[49,14],[47,15]]) },
+  { slug:'g-g5-1', order:9, instrument:'guitar', grade:5, name:'Grade 5 — Full Pentatonic Positions', description:'All 5 pentatonic positions connected.', difficulty:'hard', bpm:96, xpReward:350, requiredPlan:'PRO', notes: seq([[40,1],[43,2],[45,3],[47,4],[50,5],[52,6],[55,7],[57,8],[59,9],[62,10],[64,11],[67,12],[64,13],[62,14],[59,15],[57,16],[55,17],[52,18],[50,19],[47,20],[45,21],[43,22],[40,23]]) },
+]
+
+// ── Drum lessons (keep existing) ──────────────────────────────
+const D: Record<string, number> = {
+  KICK:36, SNARE:38, HIHAT:42, OHAT:46,
+  TOM_HI:50, TOM_MD:47, TOM_LO:45, CRASH:49, RIDE:51, RIMSHOT:37,
+}
+
+const DRUM_NAMES: Record<number, string> = {
+  36:'KICK',38:'SNARE',42:'HH',46:'OHH',50:'T.HI',47:'T.MD',45:'T.LO',49:'CRSH',51:'RIDE',37:'RIM'
 }
 
 function drumSeq(pairs: [number, number][]) {
@@ -55,886 +458,51 @@ function drumSeq(pairs: [number, number][]) {
   }))
 }
 
-// ═══════════════════════════════════════════════════════════════
-// PIANO LESSONS — ABRSM Grade 1 to 5 Inspired
-// ═══════════════════════════════════════════════════════════════
-const pianoLessons = [
-
-  // ── GRADE 1 ──────────────────────────────────────────────────
-  {
-    slug:'p-g1-1', order:1, instrument:'piano',
-    name:'Grade 1 — Middle C Position',
-    description:'Five finger exercise on C D E F G. Foundation of all piano playing.',
-    difficulty:'easy', bpm:60, xpReward:50,
-    notes: seq([
-      [N.C4,1],[N.D4,2],[N.E4,3],[N.F4,4],[N.G4,5],
-      [N.F4,6],[N.E4,7],[N.D4,8],[N.C4,9],
-    ]),
-  },
-  {
-    slug:'p-g1-2', order:2, instrument:'piano',
-    name:'Grade 1 — C Major Scale',
-    description:'C major scale one octave ascending and descending. ABRSM Grade 1 requirement.',
-    difficulty:'easy', bpm:66, xpReward:75,
-    notes: seq([
-      [N.C4,1],[N.D4,2],[N.E4,3],[N.F4,4],
-      [N.G4,5],[N.A4,6],[N.B4,7],[N.C5,8],
-      [N.B4,9],[N.A4,10],[N.G4,11],[N.F4,12],
-      [N.E4,13],[N.D4,14],[N.C4,15],
-    ]),
-  },
-  {
-    slug:'p-g1-3', order:3, instrument:'piano',
-    name:'Grade 1 — G Major Scale',
-    description:'G major scale with F# . One octave ascending and descending.',
-    difficulty:'easy', bpm:66, xpReward:75,
-    notes: seq([
-      [N.G3,1],[N.A3,2],[N.B3,3],[N.C4,4],
-      [N.D4,5],[N.E4,6],[N.Fs4,7],[N.G4,8],
-      [N.Fs4,9],[N.E4,10],[N.D4,11],[N.C4,12],
-      [N.B3,13],[N.A3,14],[N.G3,15],
-    ]),
-  },
-  {
-    slug:'p-g1-4', order:4, instrument:'piano',
-    name:'Grade 1 — A Minor Scale (Natural)',
-    description:'A natural minor scale. Relative minor of C major.',
-    difficulty:'easy', bpm:66, xpReward:75,
-    notes: seq([
-      [N.A3,1],[N.B3,2],[N.C4,3],[N.D4,4],
-      [N.E4,5],[N.F4,6],[N.G4,7],[N.A4,8],
-      [N.G4,9],[N.F4,10],[N.E4,11],[N.D4,12],
-      [N.C4,13],[N.B3,14],[N.A3,15],
-    ]),
-  },
-  {
-    slug:'p-g1-5', order:5, instrument:'piano',
-    name:'Grade 1 — C Major Arpeggio',
-    description:'Broken chord C-E-G ascending and descending. ABRSM Grade 1 arpeggio.',
-    difficulty:'easy', bpm:72, xpReward:100,
-    notes: seq([
-      [N.C4,1],[N.E4,2],[N.G4,3],[N.C5,4],
-      [N.G4,5],[N.E4,6],[N.C4,7],
-      [N.C4,8],[N.E4,9],[N.G4,10],[N.C5,11],
-      [N.G4,12],[N.E4,13],[N.C4,14],
-    ]),
-  },
-  {
-    slug:'p-g1-6', order:6, instrument:'piano',
-    name:'Grade 1 — Melody in C (Andante)',
-    description:'Simple melody using C major notes. Steady Andante tempo.',
-    difficulty:'easy', bpm:76, xpReward:100,
-    notes: seq([
-      [N.E4,1],[N.G4,2],[N.A4,3],[N.G4,4],
-      [N.E4,5],[N.C4,6],[N.D4,7],[N.E4,8],
-      [N.F4,9],[N.E4,10],[N.D4,11],[N.C4,12],
-      [N.G4,13],[N.E4,15],
-    ]),
-  },
-
-  // ── GRADE 2 ──────────────────────────────────────────────────
-  {
-    slug:'p-g2-1', order:7, instrument:'piano',
-    name:'Grade 2 — D Major Scale',
-    description:'D major scale with F# and C#. One octave. ABRSM Grade 2.',
-    difficulty:'easy', bpm:72, xpReward:100,
-    notes: seq([
-      [N.D4,1],[N.E4,2],[N.Fs4,3],[N.G4,4],
-      [N.A4,5],[N.B4,6],[N.Cs5,7],[N.D5,8],
-      [N.Cs5,9],[N.B4,10],[N.A4,11],[N.G4,12],
-      [N.Fs4,13],[N.E4,14],[N.D4,15],
-    ]),
-  },
-  {
-    slug:'p-g2-2', order:8, instrument:'piano',
-    name:'Grade 2 — F Major Scale',
-    description:'F major scale with Bb. One octave ascending and descending.',
-    difficulty:'easy', bpm:72, xpReward:100,
-    notes: seq([
-      [N.F3,1],[N.G3,2],[N.A3,3],[N.As3,4],
-      [N.C4,5],[N.D4,6],[N.E4,7],[N.F4,8],
-      [N.E4,9],[N.D4,10],[N.C4,11],[N.As3,12],
-      [N.A3,13],[N.G3,14],[N.F3,15],
-    ]),
-  },
-  {
-    slug:'p-g2-3', order:9, instrument:'piano',
-    name:'Grade 2 — D Minor Scale (Harmonic)',
-    description:'D harmonic minor with raised 7th C#. ABRSM Grade 2.',
-    difficulty:'medium', bpm:72, xpReward:125,
-    notes: seq([
-      [N.D4,1],[N.E4,2],[N.F4,3],[N.G4,4],
-      [N.A4,5],[N.As4,6],[N.Cs5,7],[N.D5,8],
-      [N.Cs5,9],[N.As4,10],[N.A4,11],[N.G4,12],
-      [N.F4,13],[N.E4,14],[N.D4,15],
-    ]),
-  },
-  {
-    slug:'p-g2-4', order:10, instrument:'piano',
-    name:'Grade 2 — Minuet in G Style',
-    description:'Minuet style melody in G major. Elegant and flowing.',
-    difficulty:'medium', bpm:80, xpReward:150,
-    notes: seq([
-      [N.D4,1],[N.G4,2],[N.A4,3],[N.B4,4],
-      [N.C5,5],[N.B4,6],[N.A4,7],
-      [N.D5,9],[N.C5,10],[N.B4,11],[N.A4,12],
-      [N.G4,13],[N.Fs4,15],
-      [N.G4,17],[N.A4,18],[N.B4,19],[N.G4,20],
-      [N.E4,21],[N.Fs4,23],[N.G4,24],
-    ]),
-  },
-  {
-    slug:'p-g2-5', order:11, instrument:'piano',
-    name:'Grade 2 — Chromatic Scale Intro',
-    description:'Chromatic scale from C4 to G4. Introduction to all 12 semitones.',
-    difficulty:'medium', bpm:76, xpReward:150,
-    notes: seq([
-      [N.C4,1],[N.Cs4,2],[N.D4,3],[N.Ds4,4],
-      [N.E4,5],[N.F4,6],[N.Fs4,7],[N.G4,8],
-      [N.Fs4,9],[N.F4,10],[N.E4,11],[N.Ds4,12],
-      [N.D4,13],[N.Cs4,14],[N.C4,15],
-    ]),
-  },
-
-  // ── GRADE 3 ──────────────────────────────────────────────────
-  {
-    slug:'p-g3-1', order:12, instrument:'piano',
-    name:'Grade 3 — Bb Major Scale',
-    description:'Bb major scale two octaves. ABRSM Grade 3 requirement.',
-    difficulty:'medium', bpm:80, xpReward:175,
-    notes: seq([
-      [N.As3,1],[N.C4,2],[N.D4,3],[N.Ds4,4],
-      [N.F4,5],[N.G4,6],[N.A4,7],[N.As4,8],
-      [N.A4,9],[N.G4,10],[N.F4,11],[N.Ds4,12],
-      [N.D4,13],[N.C4,14],[N.As3,15],
-    ]),
-  },
-  {
-    slug:'p-g3-2', order:13, instrument:'piano',
-    name:'Grade 3 — E Minor Scale (Melodic)',
-    description:'E melodic minor — raised 6th and 7th ascending, natural descending.',
-    difficulty:'medium', bpm:80, xpReward:175,
-    notes: seq([
-      [N.E4,1],[N.Fs4,2],[N.G4,3],[N.A4,4],
-      [N.B4,5],[N.Cs5,6],[N.Ds5,7],[N.E5,8],
-      [N.D5,9],[N.C5,10],[N.B4,11],[N.A4,12],
-      [N.G4,13],[N.Fs4,14],[N.E4,15],
-    ]),
-  },
-  {
-    slug:'p-g3-3', order:14, instrument:'piano',
-    name:'Grade 3 — Waltz Style',
-    description:'Waltz in A minor. 3/4 feel with melodic right hand.',
-    difficulty:'medium', bpm:88, xpReward:200,
-    notes: seq([
-      [N.A4,1],[N.E4,2],[N.C4,3],
-      [N.B4,4],[N.E4,5],[N.C4,6],
-      [N.C5,7],[N.E4,8],[N.A3,9],
-      [N.B4,10],[N.D4,11],[N.G3,12],
-      [N.A4,13],[N.E4,14],[N.C4,15],
-      [N.E4,16],[N.A3,18],
-    ]),
-  },
-  {
-    slug:'p-g3-4', order:15, instrument:'piano',
-    name:'Grade 3 — Contrary Motion C Major',
-    description:'Both hands moving in opposite directions. ABRSM favourite exercise.',
-    difficulty:'medium', bpm:84, xpReward:200,
-    notes: seq([
-      [N.C4,1],[N.D4,2],[N.E4,3],[N.F4,4],
-      [N.G4,5],[N.A4,6],[N.B4,7],[N.C5,8],
-      [N.B4,9],[N.A4,10],[N.G4,11],[N.F4,12],
-      [N.E4,13],[N.D4,14],[N.C4,15],
-    ]),
-  },
-
-  // ── GRADE 4 ──────────────────────────────────────────────────
-  {
-    slug:'p-g4-1', order:16, instrument:'piano',
-    name:'Grade 4 — E Major Scale',
-    description:'E major scale with four sharps F# C# G# D#. Two octaves.',
-    difficulty:'hard', bpm:88, xpReward:250,
-    notes: seq([
-      [N.E4,1],[N.Fs4,2],[N.Gs4,3],[N.A4,4],
-      [N.B4,5],[N.Cs5,6],[N.Ds5,7],[N.E5,8],
-      [N.Ds5,9],[N.Cs5,10],[N.B4,11],[N.A4,12],
-      [N.Gs4,13],[N.Fs4,14],[N.E4,15],
-    ]),
-  },
-  {
-    slug:'p-g4-2', order:17, instrument:'piano',
-    name:'Grade 4 — Ab Major Scale',
-    description:'Ab major — four flats. Crosses the full octave smoothly.',
-    difficulty:'hard', bpm:88, xpReward:250,
-    notes: seq([
-      [N.Gs3,1],[N.As3,2],[N.C4,3],[N.Cs4,4],
-      [N.Ds4,5],[N.F4,6],[N.G4,7],[N.Gs4,8],
-      [N.G4,9],[N.F4,10],[N.Ds4,11],[N.Cs4,12],
-      [N.C4,13],[N.As3,14],[N.Gs3,15],
-    ]),
-  },
-  {
-    slug:'p-g4-3', order:18, instrument:'piano',
-    name:'Grade 4 — Sonatina Theme',
-    description:'Sonatina-style theme. Balanced phrasing and dynamic contrast.',
-    difficulty:'hard', bpm:96, xpReward:300,
-    notes: seq([
-      [N.C5,1],[N.B4,2],[N.A4,3],[N.G4,4],
-      [N.E4,5],[N.F4,6],[N.G4,7],[N.C4,8],
-      [N.D4,9],[N.E4,10],[N.F4,11],[N.G4,12],
-      [N.A4,13],[N.G4,14],[N.F4,15],[N.E4,16],
-      [N.D4,17],[N.C4,19],
-    ]),
-  },
-  {
-    slug:'p-g4-4', order:19, instrument:'piano',
-    name:'Grade 4 — Pentatonic Improvisation',
-    description:'G pentatonic scale pattern. Foundation for jazz and blues.',
-    difficulty:'hard', bpm:100, xpReward:300,
-    notes: seq([
-      [N.G4,1],[N.A4,2],[N.B4,3],[N.D5,4],
-      [N.E5,5],[N.D5,6],[N.B4,7],[N.A4,8],
-      [N.G4,9],[N.B4,10],[N.D5,11],[N.B4,12],
-      [N.A4,13],[N.G4,15],
-    ]),
-  },
-
-  // ── GRADE 5 ──────────────────────────────────────────────────
-  {
-    slug:'p-g5-1', order:20, instrument:'piano',
-    name:'Grade 5 — B Major Scale',
-    description:'B major — five sharps. Full two octaves at Grade 5 tempo.',
-    difficulty:'hard', bpm:96, xpReward:350,
-    notes: seq([
-      [N.B3,1],[N.Cs4,2],[N.Ds4,3],[N.E4,4],
-      [N.Fs4,5],[N.Gs4,6],[N.As4,7],[N.B4,8],
-      [N.As4,9],[N.Gs4,10],[N.Fs4,11],[N.E4,12],
-      [N.Ds4,13],[N.Cs4,14],[N.B3,15],
-    ]),
-  },
-  {
-    slug:'p-g5-2', order:21, instrument:'piano',
-    name:'Grade 5 — Chromatic Scale Full',
-    description:'Full chromatic scale C4 to C5 and back. ABRSM Grade 5.',
-    difficulty:'hard', bpm:100, xpReward:350,
-    notes: seq([
-      [N.C4,1],[N.Cs4,2],[N.D4,3],[N.Ds4,4],
-      [N.E4,5],[N.F4,6],[N.Fs4,7],[N.G4,8],
-      [N.Gs4,9],[N.A4,10],[N.As4,11],[N.B4,12],
-      [N.C5,13],[N.B4,14],[N.As4,15],[N.A4,16],
-      [N.Gs4,17],[N.G4,18],[N.Fs4,19],[N.F4,20],
-      [N.E4,21],[N.Ds4,22],[N.D4,23],[N.Cs4,24],
-      [N.C4,25],
-    ]),
-  },
-  {
-    slug:'p-g5-3', order:22, instrument:'piano',
-    name:'Grade 5 — Nocturne Style',
-    description:'Lyrical nocturne-inspired melody. Expressive and flowing.',
-    difficulty:'expert', bpm:84, xpReward:400,
-    notes: seq([
-      [N.E5,1],[N.D5,2],[N.C5,3],[N.B4,4],
-      [N.G4,5],[N.A4,6],[N.B4,7],[N.C5,8],
-      [N.D5,9],[N.E5,10],[N.F5,11],[N.E5,12],
-      [N.Ds5,13],[N.E5,15],
-      [N.A4,17],[N.B4,18],[N.C5,19],[N.D5,20],
-      [N.E5,21],[N.C5,22],[N.A4,23],[N.G4,24],
-      [N.E4,25],[N.C4,27],
-    ]),
-  },
-  {
-    slug:'p-g5-4', order:23, instrument:'piano',
-    name:'Grade 5 — Alberti Bass Full',
-    description:'Full Alberti bass pattern over chord progression. Classical style.',
-    difficulty:'expert', bpm:120, xpReward:450,
-    notes: seq([
-      [N.C4,1],[N.G4,2],[N.E4,3],[N.G4,4],
-      [N.C4,5],[N.G4,6],[N.E4,7],[N.G4,8],
-      [N.F3,9],[N.C4,10],[N.A3,11],[N.C4,12],
-      [N.G3,13],[N.D4,14],[N.B3,15],[N.D4,16],
-      [N.A3,17],[N.E4,18],[N.C4,19],[N.E4,20],
-      [N.G3,21],[N.D4,22],[N.B3,23],[N.D4,24],
-      [N.C3,25],[N.G3,26],[N.E3,27],[N.G3,28],
-    ]),
-  },
-]
-
-// ═══════════════════════════════════════════════════════════════
-// GUITAR LESSONS — ABRSM Grade 1 to 5 Inspired
-// ═══════════════════════════════════════════════════════════════
-const guitarLessons = [
-
-  // ── GRADE 1 ──────────────────────────────────────────────────
-  {
-    slug:'g-g1-1', order:1, instrument:'guitar',
-    name:'Grade 1 — Open String Exercise',
-    description:'All 6 open strings played evenly. Foundation of guitar technique.',
-    difficulty:'easy', bpm:60, xpReward:50,
-    notes: seq([[40,1,'E2'],[45,2,'A2'],[50,3,'D3'],[55,4,'G3'],[59,5,'B3'],[64,6,'E4'],[59,7,'B3'],[55,8,'G3'],[50,9,'D3'],[45,10,'A2'],[40,11,'E2']]),
-  },
-  {
-    slug:'g-g1-2', order:2, instrument:'guitar',
-    name:'Grade 1 — E Minor Chord Melody',
-    description:'Simple melody using first position notes on E minor.',
-    difficulty:'easy', bpm:63, xpReward:75,
-    notes: seq([
-      [64,1,'E4'],[62,2,'D4'],[59,3,'B3'],[57,4,'A3'],
-      [55,5,'G3'],[57,6,'A3'],[59,7,'B3'],[60,8,'C4'],
-      [62,9,'D4'],[64,10,'E4'],[62,11,'D4'],[59,12,'B3'],
-      [55,13,'G3'],[55,15,'G3'],
-    ]),
-  },
-  {
-    slug:'g-g1-3', order:3, instrument:'guitar',
-    name:'Grade 1 — C Major Position',
-    description:'First position C major scale on guitar. ABRSM Grade 1.',
-    difficulty:'easy', bpm:66, xpReward:75,
-    notes: seq([
-      [48,1,'C3'],[50,2,'D3'],[52,3,'E3'],[53,4,'F3'],
-      [55,5,'G3'],[57,6,'A3'],[59,7,'B3'],[60,8,'C4'],
-      [59,9,'B3'],[57,10,'A3'],[55,11,'G3'],[53,12,'F3'],
-      [52,13,'E3'],[50,14,'D3'],[48,15,'C3'],
-    ]),
-  },
-  {
-    slug:'g-g1-4', order:4, instrument:'guitar',
-    name:'Grade 1 — Simple Waltz',
-    description:'Simple waltz melody in first position. Even tone and timing.',
-    difficulty:'easy', bpm:72, xpReward:100,
-    notes: seq([
-      [64,1,'E4'],[64,2,'E4'],[62,3,'D4'],
-      [60,4,'C4'],[60,5,'C4'],[59,6,'B3'],
-      [57,7,'A3'],[59,8,'B3'],[60,9,'C4'],
-      [62,10,'D4'],[62,11,'D4'],[60,12,'C4'],
-      [59,13,'B3'],[57,15,'A3'],
-    ]),
-  },
-  {
-    slug:'g-g1-5', order:5, instrument:'guitar',
-    name:'Grade 1 — Andantino',
-    description:'Gentle flowing melody. Focus on smooth note connections.',
-    difficulty:'easy', bpm:76, xpReward:100,
-    notes: seq([
-      [55,1,'G3'],[57,2,'A3'],[59,3,'B3'],[60,4,'C4'],
-      [59,5,'B3'],[57,6,'A3'],[55,7,'G3'],[55,8,'G3'],
-      [60,9,'C4'],[59,10,'B3'],[57,11,'A3'],[55,12,'G3'],
-      [53,13,'F3'],[52,14,'E3'],[53,15,'F3'],[55,16,'G3'],
-      [55,17,'G3'],[55,19,'G3'],
-    ]),
-  },
-
-  // ── GRADE 2 ──────────────────────────────────────────────────
-  {
-    slug:'g-g2-1', order:6, instrument:'guitar',
-    name:'Grade 2 — A Major Scale',
-    description:'A major scale first position. Introduces G# and C#.',
-    difficulty:'easy', bpm:72, xpReward:100,
-    notes: seq([
-      [45,1,'A2'],[47,2,'B2'],[49,3,'C#3'],[50,4,'D3'],
-      [52,5,'E3'],[54,6,'F#3'],[56,7,'G#3'],[57,8,'A3'],
-      [56,9,'G#3'],[54,10,'F#3'],[52,11,'E3'],[50,12,'D3'],
-      [49,13,'C#3'],[47,14,'B2'],[45,15,'A2'],
-    ]),
-  },
-  {
-    slug:'g-g2-2', order:7, instrument:'guitar',
-    name:'Grade 2 — E Minor Pentatonic',
-    description:'E minor pentatonic box pattern. Foundation of rock and blues.',
-    difficulty:'easy', bpm:76, xpReward:100,
-    notes: seq([
-      [40,1,'E2'],[43,2,'G2'],[45,3,'A2'],[47,4,'B2'],
-      [50,5,'D3'],[52,6,'E3'],[50,7,'D3'],[47,8,'B2'],
-      [45,9,'A2'],[43,10,'G2'],[40,11,'E2'],[43,12,'G2'],
-      [45,13,'A2'],[47,14,'B2'],[52,15,'E3'],
-    ]),
-  },
-  {
-    slug:'g-g2-3', order:8, instrument:'guitar',
-    name:'Grade 2 — Romanza Style',
-    description:'Classical guitar romance style. Alternating bass and melody.',
-    difficulty:'medium', bpm:76, xpReward:150,
-    notes: seq([
-      [64,1,'E4'],[59,2,'B3'],[55,3,'G3'],[52,4,'E3'],
-      [64,5,'E4'],[59,6,'B3'],[55,7,'G3'],[52,8,'E3'],
-      [62,9,'D4'],[59,10,'B3'],[55,11,'G3'],[50,12,'D3'],
-      [62,13,'D4'],[59,14,'B3'],[55,15,'G3'],
-    ]),
-  },
-  {
-    slug:'g-g2-4', order:9, instrument:'guitar',
-    name:'Grade 2 — D Major Scale',
-    description:'D major in second position on guitar. Smooth shifts.',
-    difficulty:'medium', bpm:80, xpReward:150,
-    notes: seq([
-      [50,1,'D3'],[52,2,'E3'],[54,3,'F#3'],[55,4,'G3'],
-      [57,5,'A3'],[59,6,'B3'],[61,7,'C#4'],[62,8,'D4'],
-      [61,9,'C#4'],[59,10,'B3'],[57,11,'A3'],[55,12,'G3'],
-      [54,13,'F#3'],[52,14,'E3'],[50,15,'D3'],
-    ]),
-  },
-
-  // ── GRADE 3 ──────────────────────────────────────────────────
-  {
-    slug:'g-g3-1', order:10, instrument:'guitar',
-    name:'Grade 3 — Blues Scale',
-    description:'E blues scale with b5 blue note. Essential for improvisation.',
-    difficulty:'medium', bpm:80, xpReward:175,
-    notes: seq([
-      [40,1,'E2'],[43,2,'G2'],[45,3,'A2'],[46,4,'Bb2'],
-      [47,5,'B2'],[50,6,'D3'],[52,7,'E3'],[50,8,'D3'],
-      [47,9,'B2'],[46,10,'Bb2'],[45,11,'A2'],[43,12,'G2'],
-      [40,13,'E2'],
-    ]),
-  },
-  {
-    slug:'g-g3-2', order:11, instrument:'guitar',
-    name:'Grade 3 — Andante in G',
-    description:'Andante melody in G major. Two octave range with position shifts.',
-    difficulty:'medium', bpm:84, xpReward:200,
-    notes: seq([
-      [55,1,'G3'],[57,2,'A3'],[59,3,'B3'],[60,4,'C4'],
-      [62,5,'D4'],[64,6,'E4'],[66,7,'F#4'],[67,8,'G4'],
-      [66,9,'F#4'],[64,10,'E4'],[62,11,'D4'],[60,12,'C4'],
-      [59,13,'B3'],[57,14,'A3'],[55,15,'G3'],
-    ]),
-  },
-  {
-    slug:'g-g3-3', order:12, instrument:'guitar',
-    name:'Grade 3 — Smoke on the Water',
-    description:'Deep Purple classic riff. Power chords and iconic melody.',
-    difficulty:'medium', bpm:90, xpReward:200,
-    notes: seq([
-      [50,1,'D3'],[53,2,'F3'],[55,3,'G3'],
-      [50,5,'D3'],[53,6,'F3'],[56,7,'Ab3'],[55,8,'G3'],
-      [50,10,'D3'],[53,11,'F3'],[55,12,'G3'],
-      [53,14,'F3'],[50,16,'D3'],
-    ]),
-  },
-
-  // ── GRADE 4 ──────────────────────────────────────────────────
-  {
-    slug:'g-g4-1', order:13, instrument:'guitar',
-    name:'Grade 4 — B Minor Scale',
-    description:'B minor scale in third position. Two octaves.',
-    difficulty:'hard', bpm:88, xpReward:250,
-    notes: seq([
-      [47,1,'B2'],[49,2,'C#3'],[50,3,'D3'],[52,4,'E3'],
-      [54,5,'F#3'],[55,6,'G3'],[57,7,'A3'],[59,8,'B3'],
-      [57,9,'A3'],[55,10,'G3'],[54,11,'F#3'],[52,12,'E3'],
-      [50,13,'D3'],[49,14,'C#3'],[47,15,'B2'],
-    ]),
-  },
-  {
-    slug:'g-g4-2', order:14, instrument:'guitar',
-    name:'Grade 4 — Barre Chord Workout',
-    description:'F major barre chord melody. Essential barre technique.',
-    difficulty:'hard', bpm:88, xpReward:250,
-    notes: seq([
-      [53,1,'F3'],[55,2,'G3'],[57,3,'A3'],[58,4,'Bb3'],
-      [60,5,'C4'],[62,6,'D4'],[64,7,'E4'],[65,8,'F4'],
-      [64,9,'E4'],[62,10,'D4'],[60,11,'C4'],[58,12,'Bb3'],
-      [57,13,'A3'],[55,14,'G3'],[53,15,'F3'],
-    ]),
-  },
-  {
-    slug:'g-g4-3', order:15, instrument:'guitar',
-    name:'Grade 4 — Fingerpicking Pattern',
-    description:'p-i-m-a fingerpicking pattern. Classical guitar technique.',
-    difficulty:'hard', bpm:92, xpReward:300,
-    notes: seq([
-      [40,1,'E2'],[47,2,'B2'],[52,3,'E3'],[55,4,'G3'],
-      [40,5,'E2'],[47,6,'B2'],[52,7,'E3'],[55,8,'G3'],
-      [45,9,'A2'],[47,10,'B2'],[52,11,'E3'],[57,12,'A3'],
-      [43,13,'G2'],[47,14,'B2'],[50,15,'D3'],[55,16,'G3'],
-    ]),
-  },
-
-  // ── GRADE 5 ──────────────────────────────────────────────────
-  {
-    slug:'g-g5-1', order:16, instrument:'guitar',
-    name:'Grade 5 — Full Pentatonic Positions',
-    description:'All 5 pentatonic box positions connected. Full neck workout.',
-    difficulty:'hard', bpm:96, xpReward:350,
-    notes: seq([
-      [40,1,'E2'],[43,2,'G2'],[45,3,'A2'],[47,4,'B2'],
-      [50,5,'D3'],[52,6,'E3'],[55,7,'G3'],[57,8,'A3'],
-      [59,9,'B3'],[62,10,'D4'],[64,11,'E4'],[67,12,'G4'],
-      [64,13,'E4'],[62,14,'D4'],[59,15,'B3'],[57,16,'A3'],
-      [55,17,'G3'],[52,18,'E3'],[50,19,'D3'],[47,20,'B2'],
-      [45,21,'A2'],[43,22,'G2'],[40,23,'E2'],
-    ]),
-  },
-  {
-    slug:'g-g5-2', order:17, instrument:'guitar',
-    name:'Grade 5 — Recuerdos de la Alhambra Style',
-    description:'Tremolo technique inspired piece. Right hand finger speed.',
-    difficulty:'expert', bpm:100, xpReward:450,
-    notes: seq([
-      [64,1,'E4'],[64,1.33,'E4'],[64,1.66,'E4'],
-      [62,2,'D4'],[62,2.33,'D4'],[62,2.66,'D4'],
-      [60,3,'C4'],[60,3.33,'C4'],[60,3.66,'C4'],
-      [59,4,'B3'],[59,4.33,'B3'],[59,4.66,'B3'],
-      [57,5,'A3'],[57,5.33,'A3'],[57,5.66,'A3'],
-      [55,6,'G3'],[55,6.33,'G3'],[55,6.66,'G3'],
-      [57,7,'A3'],[57,7.33,'A3'],[57,7.66,'A3'],
-      [59,8,'B3'],[59,8.33,'B3'],[59,8.66,'B3'],
-    ]),
-  },
-  {
-    slug:'g-g5-3', order:18, instrument:'guitar',
-    name:'Grade 5 — Expert Shred Run',
-    description:'Chromatic run at maximum tempo. Ultimate speed exercise.',
-    difficulty:'expert', bpm:160, xpReward:500,
-    notes: seq([
-      [40,1],[41,2],[42,3],[43,4],[44,5],[45,6],[46,7],[47,8],
-      [48,9],[49,10],[50,11],[51,12],[52,13],[53,14],[54,15],[55,16],
-      [54,17],[53,18],[52,19],[51,20],[50,21],[49,22],[48,23],[47,24],
-      [46,25],[45,26],[44,27],[43,28],[42,29],[41,30],[40,31],
-    ]),
-  },
-]
-
-// ═══════════════════════════════════════════════════════════════
-// DRUM LESSONS — ABRSM Percussion Grade 1 to 5 Inspired
-// ═══════════════════════════════════════════════════════════════
 const drumLessons = [
-
-  // ── GRADE 1 ──────────────────────────────────────────────────
-  {
-    slug:'d-g1-1', order:1, instrument:'drums',
-    name:'Grade 1 — Single Stroke Roll',
-    description:'Alternating single strokes R-L-R-L on snare. Core rudiment.',
-    difficulty:'easy', bpm:60, xpReward:50,
-    notes: drumSeq([
-      [D.SNARE,1],[D.SNARE,1.5],[D.SNARE,2],[D.SNARE,2.5],
-      [D.SNARE,3],[D.SNARE,3.5],[D.SNARE,4],[D.SNARE,4.5],
-      [D.SNARE,5],[D.SNARE,5.5],[D.SNARE,6],[D.SNARE,6.5],
-      [D.SNARE,7],[D.SNARE,7.5],[D.SNARE,8],[D.SNARE,8.5],
-    ]),
-  },
-  {
-    slug:'d-g1-2', order:2, instrument:'drums',
-    name:'Grade 1 — Kick on Beats',
-    description:'Bass drum on beats 1 2 3 4. Steady pulse foundation.',
-    difficulty:'easy', bpm:63, xpReward:50,
-    notes: drumSeq([
-      [D.KICK,1],[D.KICK,2],[D.KICK,3],[D.KICK,4],
-      [D.KICK,5],[D.KICK,6],[D.KICK,7],[D.KICK,8],
-    ]),
-  },
-  {
-    slug:'d-g1-3', order:3, instrument:'drums',
-    name:'Grade 1 — Snare on 2 and 4',
-    description:'Snare on beats 2 and 4. The backbeat — foundation of all popular music.',
-    difficulty:'easy', bpm:66, xpReward:75,
-    notes: drumSeq([
-      [D.KICK,1],[D.SNARE,2],[D.KICK,3],[D.SNARE,4],
-      [D.KICK,5],[D.SNARE,6],[D.KICK,7],[D.SNARE,8],
-    ]),
-  },
-  {
-    slug:'d-g1-4', order:4, instrument:'drums',
-    name:'Grade 1 — Hi-Hat Quarter Notes',
-    description:'Hi-hat on every beat with kick and snare. Basic coordination.',
-    difficulty:'easy', bpm:70, xpReward:75,
-    notes: drumSeq([
-      [D.HIHAT,1],[D.KICK,1],
-      [D.HIHAT,2],[D.SNARE,2],
-      [D.HIHAT,3],[D.KICK,3],
-      [D.HIHAT,4],[D.SNARE,4],
-      [D.HIHAT,5],[D.KICK,5],
-      [D.HIHAT,6],[D.SNARE,6],
-      [D.HIHAT,7],[D.KICK,7],
-      [D.HIHAT,8],[D.SNARE,8],
-    ]),
-  },
-  {
-    slug:'d-g1-5', order:5, instrument:'drums',
-    name:'Grade 1 — Basic Rock Beat',
-    description:'Hi-hat 8th notes with kick on 1 and 3, snare on 2 and 4.',
-    difficulty:'easy', bpm:72, xpReward:100,
-    notes: drumSeq([
-      [D.HIHAT,1],[D.KICK,1],
-      [D.HIHAT,1.5],
-      [D.HIHAT,2],[D.SNARE,2],
-      [D.HIHAT,2.5],
-      [D.HIHAT,3],[D.KICK,3],
-      [D.HIHAT,3.5],
-      [D.HIHAT,4],[D.SNARE,4],
-      [D.HIHAT,4.5],
-      [D.HIHAT,5],[D.KICK,5],
-      [D.HIHAT,5.5],
-      [D.HIHAT,6],[D.SNARE,6],
-      [D.HIHAT,6.5],
-      [D.HIHAT,7],[D.KICK,7],
-      [D.HIHAT,7.5],
-      [D.HIHAT,8],[D.SNARE,8],
-    ]),
-  },
-
-  // ── GRADE 2 ──────────────────────────────────────────────────
-  {
-    slug:'d-g2-1', order:6, instrument:'drums',
-    name:'Grade 2 — Double Stroke Roll',
-    description:'R-R-L-L double strokes on snare. ABRSM percussion rudiment.',
-    difficulty:'easy', bpm:72, xpReward:100,
-    notes: drumSeq([
-      [D.SNARE,1],[D.SNARE,1.25],[D.SNARE,1.5],[D.SNARE,1.75],
-      [D.SNARE,2],[D.SNARE,2.25],[D.SNARE,2.5],[D.SNARE,2.75],
-      [D.SNARE,3],[D.SNARE,3.25],[D.SNARE,3.5],[D.SNARE,3.75],
-      [D.SNARE,4],[D.SNARE,4.25],[D.SNARE,4.5],[D.SNARE,4.75],
-    ]),
-  },
-  {
-    slug:'d-g2-2', order:7, instrument:'drums',
-    name:'Grade 2 — Paradiddle',
-    description:'R-L-R-R L-R-L-L paradiddle. Essential sticking pattern.',
-    difficulty:'medium', bpm:76, xpReward:125,
-    notes: drumSeq([
-      [D.SNARE,1],[D.SNARE,1.5],[D.SNARE,2],[D.SNARE,2.25],
-      [D.SNARE,2.5],[D.SNARE,3],[D.SNARE,3.5],[D.SNARE,3.75],
-      [D.SNARE,4],[D.SNARE,4.5],[D.SNARE,5],[D.SNARE,5.25],
-      [D.SNARE,5.5],[D.SNARE,6],[D.SNARE,6.5],[D.SNARE,6.75],
-    ]),
-  },
-  {
-    slug:'d-g2-3', order:8, instrument:'drums',
-    name:'Grade 2 — Shuffle Beat',
-    description:'Swung 8th notes shuffle feel. Foundation of blues drumming.',
-    difficulty:'medium', bpm:80, xpReward:150,
-    notes: drumSeq([
-      [D.HIHAT,1],[D.KICK,1],
-      [D.HIHAT,1.66],
-      [D.HIHAT,2],[D.SNARE,2],
-      [D.HIHAT,2.66],
-      [D.HIHAT,3],[D.KICK,3],
-      [D.HIHAT,3.66],
-      [D.HIHAT,4],[D.SNARE,4],
-      [D.HIHAT,4.66],
-      [D.HIHAT,5],[D.KICK,5],
-      [D.HIHAT,5.66],
-      [D.HIHAT,6],[D.SNARE,6],
-      [D.HIHAT,6.66],
-      [D.HIHAT,7],[D.KICK,7],
-      [D.HIHAT,7.66],
-      [D.HIHAT,8],[D.SNARE,8],
-    ]),
-  },
-  {
-    slug:'d-g2-4', order:9, instrument:'drums',
-    name:'Grade 2 — Tom Tom Fill',
-    description:'4 beat tom fill from high to low. Musical fill pattern.',
-    difficulty:'medium', bpm:80, xpReward:150,
-    notes: drumSeq([
-      [D.TOM_HI,1],[D.TOM_HI,1.5],
-      [D.TOM_MD,2],[D.TOM_MD,2.5],
-      [D.TOM_LO,3],[D.TOM_LO,3.5],
-      [D.SNARE,4],[D.KICK,4],[D.CRASH,4],
-      [D.TOM_HI,5],[D.TOM_HI,5.5],
-      [D.TOM_MD,6],[D.TOM_MD,6.5],
-      [D.TOM_LO,7],[D.TOM_LO,7.5],
-      [D.SNARE,8],[D.KICK,8],[D.CRASH,8],
-    ]),
-  },
-
-  // ── GRADE 3 ──────────────────────────────────────────────────
-  {
-    slug:'d-g3-1', order:10, instrument:'drums',
-    name:'Grade 3 — Flam Rudiment',
-    description:'Grace note before primary stroke. Adds texture and accent.',
-    difficulty:'medium', bpm:80, xpReward:175,
-    notes: drumSeq([
-      [D.RIMSHOT,1],[D.SNARE,1.1],
-      [D.RIMSHOT,2],[D.SNARE,2.1],
-      [D.RIMSHOT,3],[D.SNARE,3.1],
-      [D.RIMSHOT,4],[D.SNARE,4.1],
-      [D.RIMSHOT,5],[D.SNARE,5.1],
-      [D.RIMSHOT,6],[D.SNARE,6.1],
-      [D.RIMSHOT,7],[D.SNARE,7.1],
-      [D.RIMSHOT,8],[D.SNARE,8.1],
-    ]),
-  },
-  {
-    slug:'d-g3-2', order:11, instrument:'drums',
-    name:'Grade 3 — Funk Groove',
-    description:'Syncopated funk beat. Ghost notes on snare with open hi-hat.',
-    difficulty:'medium', bpm:88, xpReward:200,
-    notes: drumSeq([
-      [D.KICK,1],[D.HIHAT,1],
-      [D.HIHAT,1.5],
-      [D.SNARE,2],[D.HIHAT,2],
-      [D.KICK,2.5],[D.HIHAT,2.5],
-      [D.HIHAT,3],[D.KICK,3.25],
-      [D.OHAT,3.5],
-      [D.SNARE,4],[D.HIHAT,4],
-      [D.KICK,4.5],
-      [D.HIHAT,5],[D.KICK,5],
-      [D.HIHAT,5.5],
-      [D.SNARE,6],[D.HIHAT,6],
-      [D.KICK,6.5],[D.HIHAT,6.5],
-      [D.HIHAT,7],
-      [D.OHAT,7.5],
-      [D.SNARE,8],[D.CRASH,8],[D.KICK,8],
-    ]),
-  },
-  {
-    slug:'d-g3-3', order:12, instrument:'drums',
-    name:'Grade 3 — Jazz Ride Pattern',
-    description:'Jazz ride cymbal pattern with hi-hat on 2 and 4.',
-    difficulty:'medium', bpm:92, xpReward:200,
-    notes: drumSeq([
-      [D.RIDE,1],[D.KICK,1],
-      [D.RIDE,1.66],
-      [D.RIDE,2],[D.HIHAT,2],
-      [D.RIDE,2.66],
-      [D.RIDE,3],[D.KICK,3],
-      [D.RIDE,3.66],
-      [D.RIDE,4],[D.HIHAT,4],
-      [D.RIDE,4.66],
-      [D.RIDE,5],[D.KICK,5],
-      [D.RIDE,5.66],
-      [D.RIDE,6],[D.HIHAT,6],
-      [D.RIDE,6.66],
-      [D.RIDE,7],
-      [D.RIDE,7.66],
-      [D.RIDE,8],[D.HIHAT,8],[D.KICK,8],
-    ]),
-  },
-
-  // ── GRADE 4 ──────────────────────────────────────────────────
-  {
-    slug:'d-g4-1', order:13, instrument:'drums',
-    name:'Grade 4 — Double Bass Intro',
-    description:'Double kick drum pattern. Develops independent foot technique.',
-    difficulty:'hard', bpm:90, xpReward:250,
-    notes: drumSeq([
-      [D.KICK,1],[D.KICK,1.5],[D.SNARE,2],
-      [D.KICK,2.5],[D.KICK,3],[D.SNARE,4],
-      [D.KICK,4.5],[D.KICK,5],[D.SNARE,6],
-      [D.KICK,6.5],[D.KICK,7],[D.SNARE,8],
-      [D.KICK,8.5],[D.CRASH,9],
-    ]),
-  },
-  {
-    slug:'d-g4-2', order:14, instrument:'drums',
-    name:'Grade 4 — 16th Note Hi-Hat',
-    description:'16th note hi-hat with syncopated kick. Advanced coordination.',
-    difficulty:'hard', bpm:88, xpReward:275,
-    notes: drumSeq([
-      [D.HIHAT,1],[D.KICK,1],[D.HIHAT,1.25],[D.HIHAT,1.5],[D.HIHAT,1.75],
-      [D.HIHAT,2],[D.SNARE,2],[D.HIHAT,2.25],[D.HIHAT,2.5],[D.KICK,2.75],
-      [D.HIHAT,3],[D.HIHAT,3.25],[D.HIHAT,3.5],[D.KICK,3.5],[D.HIHAT,3.75],
-      [D.HIHAT,4],[D.SNARE,4],[D.HIHAT,4.25],[D.HIHAT,4.5],[D.HIHAT,4.75],
-    ]),
-  },
-  {
-    slug:'d-g4-3', order:15, instrument:'drums',
-    name:'Grade 4 — Samba Pattern',
-    description:'Brazilian samba rhythm on drum kit. Cross-stick and surdo feel.',
-    difficulty:'hard', bpm:96, xpReward:300,
-    notes: drumSeq([
-      [D.KICK,1],[D.HIHAT,1],
-      [D.RIMSHOT,1.5],
-      [D.KICK,2],[D.HIHAT,2],
-      [D.KICK,2.5],
-      [D.HIHAT,3],[D.SNARE,3],
-      [D.RIMSHOT,3.5],
-      [D.KICK,4],[D.HIHAT,4],
-      [D.KICK,4.5],
-      [D.HIHAT,5],[D.KICK,5],
-      [D.RIMSHOT,5.5],
-      [D.HIHAT,6],[D.SNARE,6],
-      [D.KICK,6.5],
-      [D.HIHAT,7],[D.KICK,7],
-      [D.RIMSHOT,7.5],
-      [D.HIHAT,8],[D.SNARE,8],[D.CRASH,8],
-    ]),
-  },
-
-  // ── GRADE 5 ──────────────────────────────────────────────────
-  {
-    slug:'d-g5-1', order:16, instrument:'drums',
-    name:'Grade 5 — Linear Drumming',
-    description:'No two drums hit simultaneously. Modern linear groove technique.',
-    difficulty:'hard', bpm:96, xpReward:350,
-    notes: drumSeq([
-      [D.KICK,1],[D.HIHAT,1.25],[D.SNARE,1.5],[D.HIHAT,1.75],
-      [D.KICK,2],[D.HIHAT,2.25],[D.KICK,2.5],[D.SNARE,2.75],
-      [D.HIHAT,3],[D.KICK,3.25],[D.HIHAT,3.5],[D.SNARE,3.75],
-      [D.KICK,4],[D.HIHAT,4.25],[D.SNARE,4.5],[D.KICK,4.75],
-    ]),
-  },
-  {
-    slug:'d-g5-2', order:17, instrument:'drums',
-    name:'Grade 5 — Polyrhythm 3 over 4',
-    description:'Three notes over four beats. Advanced rhythmic independence.',
-    difficulty:'hard', bpm:92, xpReward:375,
-    notes: drumSeq([
-      [D.SNARE,1],[D.KICK,1],
-      [D.HIHAT,1.5],
-      [D.SNARE,2.33],
-      [D.HIHAT,2.5],
-      [D.KICK,3],
-      [D.SNARE,3.66],[D.HIHAT,3.66],
-      [D.KICK,4.5],
-      [D.SNARE,5],[D.HIHAT,5],
-      [D.KICK,5.5],
-      [D.SNARE,6.33],
-      [D.HIHAT,7],
-      [D.SNARE,7.66],[D.KICK,7.66],
-      [D.CRASH,8],[D.KICK,8],
-    ]),
-  },
-  {
-    slug:'d-g5-3', order:18, instrument:'drums',
-    name:'Grade 5 — Blast Beat',
-    description:'Extreme speed alternating kick and snare. Metal drumming pinnacle.',
-    difficulty:'expert', bpm:160, xpReward:500,
-    notes: drumSeq([
-      [D.KICK,1],[D.SNARE,1.5],
-      [D.KICK,2],[D.SNARE,2.5],
-      [D.KICK,3],[D.SNARE,3.5],
-      [D.KICK,4],[D.SNARE,4.5],
-      [D.KICK,5],[D.SNARE,5.5],
-      [D.KICK,6],[D.SNARE,6.5],
-      [D.KICK,7],[D.SNARE,7.5],
-      [D.KICK,8],[D.CRASH,8],
-    ]),
-  },
+  { slug:'d-g1-1', order:1, instrument:'drums', grade:1, name:'Grade 1 — Single Stroke Roll', description:'Alternating single strokes R-L-R-L on snare.', difficulty:'easy', bpm:60, xpReward:50, requiredPlan:'FREE', notes: drumSeq([[D.SNARE,1],[D.SNARE,1.5],[D.SNARE,2],[D.SNARE,2.5],[D.SNARE,3],[D.SNARE,3.5],[D.SNARE,4],[D.SNARE,4.5]]) },
+  { slug:'d-g1-2', order:2, instrument:'drums', grade:1, name:'Grade 1 — Kick on Beats', description:'Bass drum on every beat.', difficulty:'easy', bpm:63, xpReward:50, requiredPlan:'FREE', notes: drumSeq([[D.KICK,1],[D.KICK,2],[D.KICK,3],[D.KICK,4],[D.KICK,5],[D.KICK,6],[D.KICK,7],[D.KICK,8]]) },
+  { slug:'d-g1-3', order:3, instrument:'drums', grade:1, name:'Grade 1 — Snare on 2 and 4', description:'Snare backbeat on beats 2 and 4.', difficulty:'easy', bpm:66, xpReward:75, requiredPlan:'FREE', notes: drumSeq([[D.KICK,1],[D.SNARE,2],[D.KICK,3],[D.SNARE,4],[D.KICK,5],[D.SNARE,6],[D.KICK,7],[D.SNARE,8]]) },
+  { slug:'d-g1-4', order:4, instrument:'drums', grade:1, name:'Grade 1 — Hi-Hat Quarter Notes', description:'Hi-hat on every beat with kick and snare.', difficulty:'easy', bpm:70, xpReward:75, requiredPlan:'FREE', notes: drumSeq([[D.HIHAT,1],[D.KICK,1],[D.HIHAT,2],[D.SNARE,2],[D.HIHAT,3],[D.KICK,3],[D.HIHAT,4],[D.SNARE,4],[D.HIHAT,5],[D.KICK,5],[D.HIHAT,6],[D.SNARE,6],[D.HIHAT,7],[D.KICK,7],[D.HIHAT,8],[D.SNARE,8]]) },
+  { slug:'d-g1-5', order:5, instrument:'drums', grade:1, name:'Grade 1 — Basic Rock Beat', description:'Hi-hat 8th notes with kick on 1 and 3, snare on 2 and 4.', difficulty:'easy', bpm:72, xpReward:100, requiredPlan:'FREE', notes: drumSeq([[D.HIHAT,1],[D.KICK,1],[D.HIHAT,1.5],[D.HIHAT,2],[D.SNARE,2],[D.HIHAT,2.5],[D.HIHAT,3],[D.KICK,3],[D.HIHAT,3.5],[D.HIHAT,4],[D.SNARE,4],[D.HIHAT,4.5],[D.HIHAT,5],[D.KICK,5],[D.HIHAT,5.5],[D.HIHAT,6],[D.SNARE,6],[D.HIHAT,6.5],[D.HIHAT,7],[D.KICK,7],[D.HIHAT,7.5],[D.HIHAT,8],[D.SNARE,8]]) },
+  { slug:'d-g2-1', order:6, instrument:'drums', grade:2, name:'Grade 2 — Double Stroke Roll', description:'R-R-L-L double strokes on snare.', difficulty:'easy', bpm:72, xpReward:100, requiredPlan:'BASIC', notes: drumSeq([[D.SNARE,1],[D.SNARE,1.25],[D.SNARE,1.5],[D.SNARE,1.75],[D.SNARE,2],[D.SNARE,2.25],[D.SNARE,2.5],[D.SNARE,2.75],[D.SNARE,3],[D.SNARE,3.25],[D.SNARE,3.5],[D.SNARE,3.75],[D.SNARE,4],[D.SNARE,4.25],[D.SNARE,4.5],[D.SNARE,4.75]]) },
+  { slug:'d-g2-2', order:7, instrument:'drums', grade:2, name:'Grade 2 — Paradiddle', description:'R-L-R-R L-R-L-L paradiddle.', difficulty:'medium', bpm:76, xpReward:125, requiredPlan:'BASIC', notes: drumSeq([[D.SNARE,1],[D.SNARE,1.5],[D.SNARE,2],[D.SNARE,2.25],[D.SNARE,2.5],[D.SNARE,3],[D.SNARE,3.5],[D.SNARE,3.75],[D.SNARE,4],[D.SNARE,4.5],[D.SNARE,5],[D.SNARE,5.25],[D.SNARE,5.5],[D.SNARE,6],[D.SNARE,6.5],[D.SNARE,6.75]]) },
+  { slug:'d-g3-1', order:8, instrument:'drums', grade:3, name:'Grade 3 — Funk Groove', description:'Syncopated funk beat with ghost notes.', difficulty:'medium', bpm:88, xpReward:200, requiredPlan:'BASIC', notes: drumSeq([[D.KICK,1],[D.HIHAT,1],[D.HIHAT,1.5],[D.SNARE,2],[D.KICK,2.5],[D.HIHAT,3],[D.OHAT,3.5],[D.SNARE,4],[D.KICK,4.5],[D.HIHAT,5],[D.KICK,5],[D.HIHAT,5.5],[D.SNARE,6],[D.KICK,6.5],[D.HIHAT,7],[D.OHAT,7.5],[D.SNARE,8],[D.CRASH,8]]) },
+  { slug:'d-g4-1', order:9, instrument:'drums', grade:4, name:'Grade 4 — Double Bass Pattern', description:'Double kick drum pattern for independence.', difficulty:'hard', bpm:90, xpReward:250, requiredPlan:'PRO', notes: drumSeq([[D.KICK,1],[D.KICK,1.5],[D.SNARE,2],[D.KICK,2.5],[D.KICK,3],[D.SNARE,4],[D.KICK,4.5],[D.KICK,5],[D.SNARE,6],[D.KICK,6.5],[D.KICK,7],[D.SNARE,8]]) },
+  { slug:'d-g5-1', order:10, instrument:'drums', grade:5, name:'Grade 5 — Blast Beat', description:'High-speed alternating kick and snare.', difficulty:'expert', bpm:160, xpReward:500, requiredPlan:'PRO', notes: drumSeq([[D.KICK,1],[D.SNARE,1.5],[D.KICK,2],[D.SNARE,2.5],[D.KICK,3],[D.SNARE,3.5],[D.KICK,4],[D.SNARE,4.5],[D.KICK,5],[D.SNARE,5.5],[D.KICK,6],[D.SNARE,6.5],[D.KICK,7],[D.SNARE,7.5],[D.KICK,8],[D.CRASH,8]]) },
 ]
 
 // ═══════════════════════════════════════════════════════════════
-// SEED
+//  SEED
 // ═══════════════════════════════════════════════════════════════
 async function main() {
-  console.log('🌱 Seeding ABRSM-inspired lessons...\n')
+  console.log('🌱 Seeding lessons...\n')
 
-  const allLessons = [
-    ...pianoLessons,
-    ...guitarLessons,
-    ...drumLessons,
-  ]
+  const all = [...pianoLessons, ...guitarLessons, ...drumLessons]
 
-  for (const lesson of allLessons) {
+  for (const lesson of all) {
     await prisma.lesson.upsert({
       where:  { slug: lesson.slug },
       update: {
-        name:        lesson.name,
-        description: lesson.description,
-        difficulty:  lesson.difficulty,
-        bpm:         lesson.bpm,
-        xpReward:    lesson.xpReward,
-        notes:       lesson.notes as any,
+        name: lesson.name, description: lesson.description,
+        difficulty: lesson.difficulty, bpm: lesson.bpm,
+        xpReward: lesson.xpReward, notes: lesson.notes as any,
+        grade: lesson.grade, requiredPlan: lesson.requiredPlan,
       },
       create: lesson as any,
     })
     console.log(`  ✓ [${lesson.instrument.padEnd(6)}] ${lesson.name}`)
   }
 
-  console.log(`\n✅ Seeded ${allLessons.length} lessons`)
-  console.log(`   🎹 Piano:  ${pianoLessons.length} lessons (Grade 1-5)`)
-  console.log(`   🎸 Guitar: ${guitarLessons.length} lessons (Grade 1-5)`)
-  console.log(`   🥁 Drums:  ${drumLessons.length} lessons (Grade 1-5)`)
+  console.log(`\n✅ Seeded ${all.length} lessons`)
+  console.log(`   🎹 Piano:  ${pianoLessons.length} lessons`)
+  console.log(`   🎸 Guitar: ${guitarLessons.length} lessons`)
+  console.log(`   🥁 Drums:  ${drumLessons.length} lessons`)
+  console.log(`\n🎹 Piano lesson breakdown:`)
+  console.log(`   Grade 1: Foundation (6 lessons)`)
+  console.log(`   Grade 2: All 12 Major + Natural/Harmonic/Melodic Minor`)
+  console.log(`   Grade 3: All 5 Modes (Dorian/Phrygian/Lydian/Mixolydian/Locrian)`)
+  console.log(`   Grade 4: All arpeggios (Major/Minor/Dom7/Maj7/Min7/Dim7/Aug)`)
+  console.log(`   Grade 5: I-IV-V-I and ii-V-I chord progressions (root + inversions)`)
 }
 
 main()

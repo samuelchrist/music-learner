@@ -14,6 +14,7 @@ import DrumKit                     from '@/components/practice/DrumPad'
 import FeedbackFlash               from '@/components/practice/FeedbackFlash'
 import Countdown                   from '@/components/practice/Countdown'
 import KeyboardGuide               from '@/components/practice/KeyboardGuide'
+import VelocityMeter               from '@/components/practice/VelocityMeter'
 import ScoreBoard                  from '@/components/score/ScoreBoard'
 import Button                      from '@/components/ui/Button'
 import LoadingSpinner              from '@/components/ui/LoadingSpinner'
@@ -22,13 +23,22 @@ import { ROUTES }                  from '@/constants/routes'
 
 type NS = 'pending' | 'active' | 'hit' | 'miss'
 
-// ── MIDI note number → Scientific pitch name ────────────────
 function midiToScientific(midi: number): string {
   if (!midi || midi === 0) return '—'
   const names = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B']
-  const octave = Math.floor(midi / 12) - 1
-  const note   = names[midi % 12]
-  return `${note}${octave}`
+  return `${names[midi % 12]}${Math.floor(midi / 12) - 1}`
+}
+
+function getVelocityLabel(v: number): string {
+  if (v === 0)  return '—'
+  if (v <= 20)  return 'ppp'
+  if (v <= 40)  return 'pp'
+  if (v <= 55)  return 'p'
+  if (v <= 70)  return 'mp'
+  if (v <= 85)  return 'mf'
+  if (v <= 100) return 'f'
+  if (v <= 115) return 'ff'
+  return 'fff'
 }
 
 export default function Practice() {
@@ -48,7 +58,25 @@ export default function Practice() {
   const [scoreResult,  setScore]    = useState<any>(null)
   const [unlocked,     setUnlocked] = useState(false)
   const [hits,         setHits]     = useState(0)
-  const fbTimer = useRef<number>()
+
+  // ── Velocity tracking ────────────────────────────────────────
+  const [currentVelocity, setCurrentVelocity] = useState(0)
+  const [velocityHistory, setVelocityHistory] = useState<number[]>([])
+  const velocityTimer = useRef<number>()
+  const fbTimer       = useRef<number>()
+
+  const avgVelocity = velocityHistory.length > 0
+    ? Math.round(velocityHistory.reduce((a, b) => a + b, 0) / velocityHistory.length)
+    : 0
+  const minVelocity = velocityHistory.length > 0 ? Math.min(...velocityHistory) : 0
+  const maxVelocity = velocityHistory.length > 0 ? Math.max(...velocityHistory) : 0
+
+  // ── All unique notes in this lesson (for scale highlighting) ─
+  const scaleNoteSet = new Set<number>(
+    lesson
+      ? lesson.notes.filter(n => !n.isRest).map(n => n.note)
+      : []
+  )
 
   const submitMut = useMutation({
     mutationFn: scoreService.submit,
@@ -65,6 +93,8 @@ export default function Practice() {
       setNStates(lesson.notes.map(() => 'pending'))
       setExpected(lesson.notes[0]?.note)
       setHits(0)
+      setVelocityHistory([])
+      setCurrentVelocity(0)
     }
   }, [lesson])
 
@@ -93,14 +123,24 @@ export default function Practice() {
     fbTimer.current = window.setTimeout(() => setShowFb(false), 500)
   }
 
-  const onNoteOn = useCallback((midi: number) => {
+  const onNoteOn = useCallback((midi: number, velocity: number) => {
     setActive(p => new Set(p).add(midi))
+
+    // Track velocity
+    setCurrentVelocity(velocity)
+    setVelocityHistory(prev => [...prev.slice(-49), velocity])
+    clearTimeout(velocityTimer.current)
+    velocityTimer.current = window.setTimeout(() => setCurrentVelocity(0), 1000)
+
     if (sessionState !== 'playing') return
     const r = handleNoteOn(midi)
     if (r === 'hit') {
       setNStates(p => { const n = [...p]; n[noteIndex] = 'hit'; return n })
       setHits(h => h + 1)
-      flash('PERFECT!', '#a855f7')
+      if (velocity >= 64 && velocity <= 100)    flash('PERFECT!', '#a855f7')
+      else if (velocity < 40)                   flash('TOO SOFT', '#3b82f6')
+      else if (velocity > 110)                  flash('TOO HARD', '#ef4444')
+      else                                      flash('GOOD', '#10b981')
     } else if (r === 'wrong') {
       flash('✗', '#ef4444')
     }
@@ -126,6 +166,7 @@ export default function Practice() {
           restartSession()
           setNStates(lesson.notes.map(() => 'pending'))
           setHits(0)
+          setVelocityHistory([])
         }}
         onNext={() => nav(ROUTES.LESSONS)}
         onHome={() => nav(ROUTES.HOME)}
@@ -133,7 +174,8 @@ export default function Practice() {
     )
   }
 
-  // ── Render correct instrument ─────────────────────────────
+  // ── Render correct instrument ─────────────────────────────────
+  // scaleNoteSet is defined ABOVE this function ✅
   function renderInstrument() {
     switch (lesson!.instrument) {
       case 'guitar':
@@ -141,7 +183,7 @@ export default function Practice() {
           <GuitarFretboard
             activeNotes={activeNotes}
             expectedNote={expectedNote}
-            onFretPress={midi => onNoteOn(midi)}
+            onFretPress={midi => onNoteOn(midi, 80)}
           />
         )
       case 'drums':
@@ -149,7 +191,7 @@ export default function Practice() {
           <DrumKit
             activeNotes={activeNotes}
             expectedNote={expectedNote}
-            onPadPress={midi => onNoteOn(midi)}
+            onPadPress={midi => onNoteOn(midi, 80)}
             onPadRelease={midi => onNoteOff(midi)}
           />
         )
@@ -159,26 +201,28 @@ export default function Practice() {
           <PianoRoll
             activeNotes={activeNotes}
             expectedNote={expectedNote}
-            onKeyPress={midi => onNoteOn(midi)}
+            scaleNotes={scaleNoteSet}
+            startMidi={21}
+            endMidi={108}
+            onKeyPress={(midi, vel) => onNoteOn(midi, vel)}
             onKeyRelease={midi => onNoteOff(midi)}
           />
         )
     }
   }
 
-  // ── Current note info ─────────────────────────────────────
+  // ── Stats bar data ────────────────────────────────────────────
   const currentNote   = lesson.notes[noteIndex]
   const totalNonRests = lesson.notes.filter(n => !n.isRest).length
   const accuracy      = totalNonRests > 0
     ? Math.round((hits / totalNonRests) * 100)
     : 0
 
-  // ── Stats bar — NO keyboard key labels ────────────────────
   const statItems = [
     {
       label: 'Instrument',
       value: lesson.instrument.charAt(0).toUpperCase() + lesson.instrument.slice(1),
-      icon:  lesson.instrument === 'piano'  ? '🎹'
+      icon:  lesson.instrument === 'piano' ? '🎹'
            : lesson.instrument === 'guitar' ? '🎸' : '🥁',
       color: '#a855f7',
     },
@@ -190,7 +234,6 @@ export default function Practice() {
     },
     {
       label: 'Current Note',
-      // Show scientific pitch name e.g. C4, D#4, G3
       value: currentNote
         ? currentNote.isRest
           ? 'Rest'
@@ -200,12 +243,26 @@ export default function Practice() {
       color: '#10b981',
     },
     {
-      label: 'Progress',
+      label: sessionState === 'idle' ? 'Total Notes' : 'Progress',
       value: sessionState === 'idle'
         ? `${lesson.notes.length} notes · ${lesson.bpm} BPM`
         : `${noteIndex + 1} / ${lesson.notes.length} · ${accuracy}%`,
       icon:  '📊',
       color: '#f59e0b',
+    },
+    {
+      label: 'Velocity',
+      value: currentVelocity > 0
+        ? `${currentVelocity} · ${getVelocityLabel(currentVelocity)}`
+        : avgVelocity > 0
+        ? `avg ${avgVelocity} · ${getVelocityLabel(avgVelocity)}`
+        : '—',
+      icon:  '💪',
+      color: currentVelocity > 110 ? '#ef4444'
+           : currentVelocity > 85  ? '#f97316'
+           : currentVelocity > 55  ? '#10b981'
+           : currentVelocity > 0   ? '#3b82f6'
+           : '#475569',
     },
   ]
 
@@ -216,131 +273,89 @@ export default function Practice() {
       )}
       <FeedbackFlash text={fbText} color={fbColor} show={showFb} />
 
-      {/* ── Top bar ────────────────────────────────────────── */}
+      {/* ── Top bar ──────────────────────────────────────────── */}
       <div style={{
-        display:      'flex',
-        alignItems:   'center',
-        gap:          16,
-        padding:      '12px 20px',
-        background:   'var(--surface)',
-        borderBottom: '1px solid var(--border)',
-        flexWrap:     'wrap',
+        display: 'flex', alignItems: 'center', gap: 16,
+        padding: '12px 20px', background: 'var(--surface)',
+        borderBottom: '1px solid var(--border)', flexWrap: 'wrap',
       }}>
         <Button variant="ghost" size="sm" onClick={() => nav(ROUTES.LESSONS)}>
           ← Lessons
         </Button>
-
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ fontSize: 22 }}>
             {lesson.instrument === 'piano'  ? '🎹'
            : lesson.instrument === 'guitar' ? '🎸' : '🥁'}
           </span>
-          <h2 style={{ fontWeight: 700, fontSize: 16 }}>
-            {lesson.name}
-          </h2>
+          <h2 style={{ fontWeight: 700, fontSize: 16 }}>{lesson.name}</h2>
         </div>
-
-        {/* Grade badge */}
         <span style={{
-          padding:      '3px 10px',
-          borderRadius: 999,
-          fontSize:     12,
-          fontWeight:   700,
-          background:   'rgba(168,85,247,0.15)',
-          color:        '#a855f7',
-          border:       '1px solid rgba(168,85,247,0.3)',
+          padding: '3px 10px', borderRadius: 999, fontSize: 12, fontWeight: 700,
+          background: 'rgba(168,85,247,.15)', color: '#a855f7',
+          border: '1px solid rgba(168,85,247,.3)',
         }}>
           Grade {(lesson as any).grade || 1}
         </span>
-
-        <div style={{
-          marginLeft: 'auto',
-          display:    'flex',
-          alignItems: 'center',
-          gap:        12,
-        }}>
-          {/* MIDI / Keyboard status */}
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 12 }}>
           <div style={{
-            display:      'flex',
-            alignItems:   'center',
-            gap:          6,
-            fontSize:     12,
-            padding:      '4px 12px',
-            borderRadius: 999,
-            border:       `1px solid ${connected ? '#10b981' : 'var(--border)'}`,
-            color:        connected ? '#10b981' : 'var(--text-sub)',
+            display: 'flex', alignItems: 'center', gap: 6,
+            fontSize: 12, padding: '4px 12px', borderRadius: 999,
+            border: `1px solid ${connected ? '#10b981' : 'var(--border)'}`,
+            color: connected ? '#10b981' : 'var(--text-sub)',
           }}>
             <span style={{
-              width:        8,
-              height:       8,
-              borderRadius: '50%',
-              background:   connected ? '#10b981' : '#475569',
-              boxShadow:    connected ? '0 0 6px #10b981' : 'none',
+              width: 8, height: 8, borderRadius: '50%',
+              background: connected ? '#10b981' : '#475569',
+              boxShadow: connected ? '0 0 6px #10b981' : 'none',
             }} />
             {connected ? deviceName || 'MIDI Connected' : 'Keyboard Mode'}
           </div>
-
-          {/* BPM */}
           <span style={{
-            color:        '#a855f7',
-            fontWeight:   700,
-            fontSize:     14,
-            background:   'rgba(168,85,247,0.1)',
-            padding:      '4px 12px',
-            borderRadius: 8,
-            border:       '1px solid rgba(168,85,247,0.2)',
+            color: '#a855f7', fontWeight: 700, fontSize: 14,
+            background: 'rgba(168,85,247,.1)',
+            padding: '4px 12px', borderRadius: 8,
+            border: '1px solid rgba(168,85,247,.2)',
           }}>
             ♩ {currentBPM} BPM
           </span>
         </div>
       </div>
 
-      {/* ── Stats bar — uses scientific pitch names ─────────── */}
+      {/* ── Stats bar ────────────────────────────────────────── */}
       <div style={{
-        display:               'grid',
-        gridTemplateColumns:   'repeat(4, 1fr)',
-        borderBottom:          '1px solid var(--border)',
-        background:            'var(--surface2)',
+        display: 'grid',
+        gridTemplateColumns: 'repeat(5, 1fr)',
+        borderBottom: '1px solid var(--border)',
+        background: 'var(--surface2)',
       }}>
         {statItems.map((item, i) => (
           <div key={item.label} style={{
-            padding:     '10px 16px',
+            padding: '10px 12px',
             borderRight: i < statItems.length - 1
-              ? '1px solid var(--border)'
-              : 'none',
-            textAlign:   'center',
-            display:     'flex',
-            flexDirection: 'column',
-            alignItems:  'center',
-            gap:         3,
+              ? '1px solid var(--border)' : 'none',
+            textAlign: 'center',
+            display: 'flex', flexDirection: 'column',
+            alignItems: 'center', gap: 3,
           }}>
             <p style={{
-              fontSize:      10,
-              color:         'var(--text-sub)',
+              fontSize: 10, color: 'var(--text-sub)',
               textTransform: 'uppercase',
-              letterSpacing: '0.06em',
-              fontWeight:    600,
+              letterSpacing: '0.06em', fontWeight: 600,
             }}>
               {item.label}
             </p>
-            <p style={{
-              fontWeight: 700,
-              fontSize:   13,
-              color:      item.color,
-            }}>
+            <p style={{ fontWeight: 700, fontSize: 12, color: item.color }}>
               {item.icon} {item.value}
             </p>
           </div>
         ))}
       </div>
 
-      {/* ── Note sequence ───────────────────────────────────── */}
+      {/* ── Note sequence ─────────────────────────────────────── */}
       <div style={{
-        flex:       1,
-        padding:    20,
+        flex: 1, padding: 20,
         background: 'var(--surface2)',
-        overflowX:  'auto',
-        minHeight:  120,
+        overflowX: 'auto', minHeight: 120,
       }}>
         <NoteSequence
           notes={lesson.notes}
@@ -349,87 +364,69 @@ export default function Practice() {
         />
       </div>
 
-      {/* ── Instrument visual ──────────────────────────────── */}
+      {/* ── Instrument visual ─────────────────────────────────── */}
       {renderInstrument()}
 
-      {/* ── Keyboard guide ─────────────────────────────────── */}
+      {/* ── Velocity meter (piano only) ───────────────────────── */}
+      {lesson.instrument === 'piano' && (
+        <VelocityMeter
+          velocity={currentVelocity}
+          noteCount={velocityHistory.length}
+          avgVelocity={avgVelocity}
+          minVelocity={minVelocity}
+          maxVelocity={maxVelocity}
+        />
+      )}
+
+      {/* ── Keyboard guide ────────────────────────────────────── */}
       <KeyboardGuide instrument={lesson.instrument as any} />
 
-      {/* ── Controls ───────────────────────────────────────── */}
+      {/* ── Controls ──────────────────────────────────────────── */}
       <div style={{
-        display:        'flex',
-        alignItems:     'center',
+        display: 'flex', alignItems: 'center',
         justifyContent: 'space-between',
-        padding:        '14px 20px',
-        background:     'var(--surface)',
-        borderTop:      '1px solid var(--border)',
-        flexWrap:       'wrap',
-        gap:            12,
+        padding: '14px 20px', background: 'var(--surface)',
+        borderTop: '1px solid var(--border)',
+        flexWrap: 'wrap', gap: 12,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <button
             onClick={toggleMetronome}
             style={{
-              padding:      '8px 14px',
-              borderRadius: 8,
-              border:       `1px solid ${metronomeOn ? '#10b981' : 'var(--border)'}`,
-              background:   metronomeOn
-                ? 'rgba(16,185,129,0.1)'
-                : 'var(--surface2)',
-              color:        metronomeOn ? '#10b981' : 'var(--text-dim)',
-              cursor:       'pointer',
-              fontSize:     13,
-              fontWeight:   600,
-              transition:   'all 0.2s',
+              padding: '8px 14px', borderRadius: 8,
+              fontSize: 13, fontWeight: 600,
+              border: `1px solid ${metronomeOn ? '#10b981' : 'var(--border)'}`,
+              background: metronomeOn
+                ? 'rgba(16,185,129,.1)' : 'var(--surface2)',
+              color: metronomeOn ? '#10b981' : 'var(--text-dim)',
+              cursor: 'pointer', transition: 'all .2s',
             }}
           >
             🎵 Metronome: {metronomeOn ? 'ON' : 'OFF'}
           </button>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <button
-              onClick={() => adjustBPM(-5)}
-              style={{
-                width:          32,
-                height:         32,
-                borderRadius:   8,
-                border:         '1px solid var(--border)',
-                background:     'var(--surface2)',
-                color:          'var(--text)',
-                cursor:         'pointer',
-                fontSize:       18,
-                display:        'flex',
-                alignItems:     'center',
-                justifyContent: 'center',
-              }}
-            >−</button>
+            <button onClick={() => adjustBPM(-5)} style={{
+              width: 32, height: 32, borderRadius: 8,
+              border: '1px solid var(--border)',
+              background: 'var(--surface2)', color: 'var(--text)',
+              cursor: 'pointer', fontSize: 18,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>−</button>
             <input
-              type="range"
-              min={40} max={200}
-              value={currentBPM}
+              type="range" min={40} max={200} value={currentBPM}
               onChange={e => setBPM(Number(e.target.value))}
               style={{ width: 100, accentColor: '#a855f7' }}
             />
-            <button
-              onClick={() => adjustBPM(5)}
-              style={{
-                width:          32,
-                height:         32,
-                borderRadius:   8,
-                border:         '1px solid var(--border)',
-                background:     'var(--surface2)',
-                color:          'var(--text)',
-                cursor:         'pointer',
-                fontSize:       18,
-                display:        'flex',
-                alignItems:     'center',
-                justifyContent: 'center',
-              }}
-            >+</button>
+            <button onClick={() => adjustBPM(5)} style={{
+              width: 32, height: 32, borderRadius: 8,
+              border: '1px solid var(--border)',
+              background: 'var(--surface2)', color: 'var(--text)',
+              cursor: 'pointer', fontSize: 18,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>+</button>
             <span style={{
-              fontSize:   13,
-              color:      'var(--text-sub)',
-              minWidth:   60,
+              fontSize: 13, color: 'var(--text-sub)', minWidth: 60,
             }}>
               {currentBPM} BPM
             </span>
@@ -443,6 +440,7 @@ export default function Practice() {
               restartSession()
               setNStates(lesson.notes.map(() => 'pending'))
               setHits(0)
+              setVelocityHistory([])
             }}
           >
             ↺ Restart
