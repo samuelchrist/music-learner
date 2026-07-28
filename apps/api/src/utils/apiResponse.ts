@@ -1,0 +1,5 @@
+import { Response } from 'express'
+export const sendSuccess = <T>(res: Response, data: T, message?: string, status = 200) =>
+  res.status(status).json({ success: true, data, message })
+export const sendError = (res: Response, error: string, status = 400) =>
+  res.status(status).json({ success: false, error })
