@@ -1,4 +1,3 @@
-import { clsx }  from 'clsx'
 import { motion } from 'framer-motion'
 
 const DIFFICULTY_CONFIG = {
@@ -22,96 +21,104 @@ const PLAN_CONFIG = {
   PRO:   { color: '#a855f7', label: 'Pro',   icon: '👑' },
 }
 
-const INSTRUMENT_ICONS: Record<string, string> = {
-  piano:  '🎹',
-  guitar: '🎸',
-  drums:  '🥁',
-}
-
 interface Props {
-  lesson:  any
-  index:   number
-  onClick: () => void
+  lesson:    any
+  index:     number
+  onClick:   () => void
+  playingId?: string | null
+  onListen?: (lesson: any) => void
 }
 
-export default function LessonCard({ lesson, index, onClick }: Props) {
+function getGradeLetter(score: number): string {
+  if (score >= 95) return 'S'
+  if (score >= 90) return 'A+'
+  if (score >= 80) return 'A'
+  if (score >= 70) return 'B+'
+  if (score >= 60) return 'B'
+  return 'C'
+}
+
+export default function LessonCard({ lesson, index, onClick, playingId, onListen }: Props) {
   const { progress }  = lesson
   const locked        = !progress?.unlocked
   const completed     = !!progress?.bestScore
   const diff          = DIFFICULTY_CONFIG[lesson.difficulty as keyof typeof DIFFICULTY_CONFIG]
-  const gradeConf     = GRADE_CONFIG[lesson.grade] || GRADE_CONFIG[1]
+  const gradeNum      = lesson.grade ?? 1
+  const gradeConf     = GRADE_CONFIG[gradeNum] || GRADE_CONFIG[1]
   const planConf      = PLAN_CONFIG[lesson.requiredPlan as keyof typeof PLAN_CONFIG] || PLAN_CONFIG.FREE
   const bestScore     = progress?.bestScore ? Math.round(progress.bestScore) : null
-
-  function getGradeLetter(score: number): string {
-    if (score >= 95) return 'S'
-    if (score >= 90) return 'A+'
-    if (score >= 80) return 'A'
-    if (score >= 70) return 'B+'
-    if (score >= 60) return 'B'
-    return 'C'
-  }
+  const isPlaying     = playingId === lesson.id
 
   return (
     <motion.div
       initial={{ opacity: 0, x: -20 }}
       animate={{ opacity: 1, x: 0 }}
       transition={{ delay: index * 0.04 }}
-      onClick={() => !locked && onClick()}
       style={{
-        background:  locked ? '#0f172a' : completed ? 'linear-gradient(135deg, #0f172a, #1a1a2e)' : '#1a1a2e',
-        border:      `1px solid ${locked ? '#1e293b' : completed ? '#10b981' + '44' : '#1e293b'}`,
-        borderLeft:  `4px solid ${locked ? '#1e293b' : completed ? '#10b981' : gradeConf.color}`,
+        background:   locked ? '#0f172a' : '#1a1a2e',
+        border:       `1px solid ${locked ? '#1e293b' : completed ? '#10b98144' : '#1e293b'}`,
+        borderLeft:   `4px solid ${locked ? '#1e293b' : completed ? '#10b981' : gradeConf.color}`,
         borderRadius: 12,
-        padding:     '16px 20px',
-        cursor:      locked ? 'not-allowed' : 'pointer',
-        opacity:     locked ? 0.5 : 1,
-        transition:  'all 0.2s ease',
-        display:     'flex',
-        alignItems:  'center',
-        gap:         16,
+        padding:      '14px 16px',
+        cursor:       locked ? 'not-allowed' : 'pointer',
+        opacity:      locked ? 0.5 : 1,
+        transition:   'all 0.2s ease',
+        display:      'flex',
+        alignItems:   'center',
+        gap:          14,
+        position:     'relative',
       }}
-      whileHover={!locked ? { x: 4, borderColor: '#a855f7' } : {}}
     >
 
       {/* Left — Number / Check */}
-      <div style={{
-        width:        44,
-        height:       44,
-        borderRadius: '50%',
-        background:   completed
-          ? 'linear-gradient(135deg, #10b981, #059669)'
-          : locked
-          ? '#1e293b'
-          : gradeConf.bg,
-        border:       `2px solid ${completed ? '#10b981' : locked ? '#334155' : gradeConf.color}`,
-        display:      'flex',
-        alignItems:   'center',
-        justifyContent: 'center',
-        fontWeight:   700,
-        fontSize:     completed ? 18 : 14,
-        color:        completed ? '#fff' : locked ? '#475569' : gradeConf.color,
-        flexShrink:   0,
-        boxShadow:    completed ? '0 0 12px rgba(16,185,129,0.4)' : 'none',
-      }}>
+      <div
+        onClick={() => !locked && onClick()}
+        style={{
+          width:          40,
+          height:         40,
+          borderRadius:   '50%',
+          background:     completed
+            ? 'linear-gradient(135deg,#10b981,#059669)'
+            : locked ? '#1e293b' : gradeConf.bg,
+          border:         `2px solid ${completed ? '#10b981' : locked ? '#334155' : gradeConf.color}`,
+          display:        'flex',
+          alignItems:     'center',
+          justifyContent: 'center',
+          fontWeight:     700,
+          fontSize:       completed ? 18 : 14,
+          color:          completed ? '#fff' : locked ? '#475569' : gradeConf.color,
+          flexShrink:     0,
+          boxShadow:      completed ? '0 0 12px rgba(16,185,129,0.4)' : 'none',
+        }}
+      >
         {completed ? '✓' : locked ? '🔒' : index + 1}
       </div>
 
       {/* Center — Info */}
-      <div style={{ flex: 1, minWidth: 0 }}>
+      <div
+        onClick={() => !locked && onClick()}
+        style={{ flex: 1, minWidth: 0 }}
+      >
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-          <span style={{ fontSize: 15, fontWeight: 700, color: locked ? '#475569' : '#e2e8f0' }}>
+          <span style={{
+            fontSize:  15,
+            fontWeight: 700,
+            color:     locked ? '#475569' : '#e2e8f0',
+          }}>
             {lesson.name}
           </span>
+          {lesson.composer && (
+            <span style={{ fontSize: 11, color: 'var(--text-sub)' }}>
+              — {lesson.composer}
+            </span>
+          )}
         </div>
-        <p style={{ fontSize: 12, color: '#64748b', marginBottom: 6 }}>
+        <p style={{ fontSize: 12, color: '#64748b', marginBottom: 6, lineHeight: 1.4 }}>
           {lesson.description}
         </p>
 
-        {/* Tags row */}
+        {/* Tags */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-
-          {/* Grade badge */}
           <span style={{
             padding:      '2px 8px',
             borderRadius: 999,
@@ -121,10 +128,9 @@ export default function LessonCard({ lesson, index, onClick }: Props) {
             color:        gradeConf.color,
             border:       `1px solid ${gradeConf.color}44`,
           }}>
-            Grade {lesson.grade}
+            Grade {gradeNum}
           </span>
 
-          {/* Difficulty badge */}
           <span style={{
             padding:      '2px 8px',
             borderRadius: 999,
@@ -136,7 +142,6 @@ export default function LessonCard({ lesson, index, onClick }: Props) {
             {diff?.label}
           </span>
 
-          {/* BPM */}
           <span style={{
             padding:      '2px 8px',
             borderRadius: 999,
@@ -148,7 +153,6 @@ export default function LessonCard({ lesson, index, onClick }: Props) {
             ♩ {lesson.bpm} BPM
           </span>
 
-          {/* Plan required */}
           {lesson.requiredPlan !== 'FREE' && (
             <span style={{
               padding:      '2px 8px',
@@ -165,16 +169,55 @@ export default function LessonCard({ lesson, index, onClick }: Props) {
         </div>
       </div>
 
-      {/* Right — Score / XP */}
+      {/* Right — Listen + Score */}
       <div style={{
-        display:       'flex',
-        flexDirection: 'column',
-        alignItems:    'flex-end',
-        gap:           6,
-        flexShrink:    0,
+        display:        'flex',
+        flexDirection:  'column',
+        alignItems:     'flex-end',
+        gap:            8,
+        flexShrink:     0,
       }}>
 
-        {/* Best score */}
+        {/* Listen button */}
+        {onListen && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              onListen(lesson)
+            }}
+            title={isPlaying ? 'Stop preview' : 'Preview melody'}
+            style={{
+              display:        'flex',
+              alignItems:     'center',
+              gap:            5,
+              padding:        '5px 10px',
+              borderRadius:   8,
+              fontSize:       12,
+              fontWeight:     600,
+              border:         `1px solid ${isPlaying ? '#a855f7' : 'var(--border)'}`,
+              background:     isPlaying
+                ? 'rgba(168,85,247,0.2)'
+                : 'var(--surface2)',
+              color:          isPlaying ? '#a855f7' : 'var(--text-sub)',
+              cursor:         'pointer',
+              transition:     'all .2s',
+            }}
+          >
+            {isPlaying ? (
+              <>
+                <span style={{ fontSize: 14 }}>⏹</span>
+                Stop
+              </>
+            ) : (
+              <>
+                <span style={{ fontSize: 14 }}>▶</span>
+                Listen
+              </>
+            )}
+          </button>
+        )}
+
+        {/* Score */}
         {bestScore !== null ? (
           <div style={{ textAlign: 'right' }}>
             <div style={{
@@ -189,7 +232,11 @@ export default function LessonCard({ lesson, index, onClick }: Props) {
               {bestScore}%
             </div>
           </div>
-        ) : locked ? (
+        ) : !locked ? (
+          <div style={{ fontSize: 11, color: '#475569', fontStyle: 'italic' }}>
+            Not played
+          </div>
+        ) : (
           <div style={{
             fontSize:     11,
             color:        planConf.color,
@@ -200,22 +247,10 @@ export default function LessonCard({ lesson, index, onClick }: Props) {
           }}>
             {planConf.icon} {planConf.label}
           </div>
-        ) : (
-          <div style={{
-            fontSize:   11,
-            color:      '#475569',
-            fontStyle:  'italic',
-          }}>
-            Not played
-          </div>
         )}
 
-        {/* XP reward */}
-        <div style={{
-          fontSize:   11,
-          color:      '#a855f7',
-          fontWeight: 600,
-        }}>
+        {/* XP */}
+        <div style={{ fontSize: 11, color: '#a855f7', fontWeight: 600 }}>
           +{lesson.xpReward} XP
         </div>
 
@@ -226,19 +261,6 @@ export default function LessonCard({ lesson, index, onClick }: Props) {
           </div>
         )}
       </div>
-
-      {/* Completed shimmer */}
-      {completed && (
-        <div style={{
-          position:     'absolute',
-          top:          0,
-          right:        0,
-          width:        40,
-          height:       40,
-          background:   'linear-gradient(135deg, transparent 50%, rgba(16,185,129,0.1) 100%)',
-          borderRadius: '0 12px 0 0',
-        }} />
-      )}
     </motion.div>
   )
 }

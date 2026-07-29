@@ -1,3 +1,5 @@
+// apps/api/prisma/schema.prisma
+
 generator client {
   provider = "prisma-client-js"
 }
@@ -7,100 +9,163 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model User {
-  id           String    @id @default(cuid())
-  email        String    @unique
-  username     String    @unique
-  passwordHash String
-  avatar       String?
-  totalXP      Int       @default(0)
-  level        Int       @default(1)
-  streak       Int       @default(0)
-  role         Role      @default(USER)
-  lastLoginAt  DateTime?
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+// ─── Enums ───────────────────────────────────────────────────────────────────
 
-  progress      LessonProgress[]
-  scores        Score[]
-  refreshTokens RefreshToken[]
-  subscription  Subscription?
-
-  @@map("users")
+enum Instrument {
+  piano
+  guitar
+  bass4
+  bass5
+  drums
 }
 
-enum Role {
-  USER
-  ADMIN
-  SUPERADMIN
+enum Difficulty {
+  easy
+  medium
+  hard
+  expert
 }
 
-model Subscription {
-  id              String           @id @default(cuid())
-  userId          String           @unique
-  plan            Plan             @default(FREE)
-  status          SubscriptionStatus @default(ACTIVE)
-  startDate       DateTime         @default(now())
-  endDate         DateTime?
-  autoRenew       Boolean          @default(false)
-  paymentRef      String?
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@map("subscriptions")
+enum Grade {
+  S
+  A_PLUS  @map("A+")
+  A
+  B_PLUS  @map("B+")
+  B
+  C
+  D
+  F
 }
 
-enum Plan {
+enum PlanTier {
   FREE
   BASIC
   PRO
 }
 
-enum SubscriptionStatus {
-  ACTIVE
-  EXPIRED
-  CANCELLED
-  PENDING
+enum LessonCategory {
+  abrsm
+  classical
+  jazz
+  pop
+  exercises
+  custom
 }
 
-model RefreshToken {
-  id        String   @id @default(cuid())
-  token     String   @unique
-  userId    String
-  expiresAt DateTime
-  createdAt DateTime @default(now())
+enum LessonSubcategory {
+  // ABRSM
+  grade1
+  grade2
+  grade3
+  grade4
+  grade5
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Classical periods
+  baroque
+  classical_period
+  romantic
+  modern
 
-  @@map("refresh_tokens")
+  // Jazz
+  jazz_basics
+  blues
+  jazz_standards
+  improvisation
+
+  // Pop
+  pop_beginner
+  pop_chords
+  pop_songs
+
+  // Exercises
+  hanon
+  czerny
+  scales_arpeggios
+  sight_reading
+
+  // Custom
+  theory_builder
+  ear_training
+  fun_challenges
 }
 
-model Lesson {
-  id           String   @id @default(cuid())
-  slug         String   @unique
-  name         String
-  description  String
-  instrument   String
-  difficulty   String
-  bpm          Int
-  order        Int
-  grade        Int      @default(1)
-  xpReward     Int      @default(100)
-  requiredPlan Plan     @default(FREE)
-  notes        Json
+// ─── Models ──────────────────────────────────────────────────────────────────
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  username     String   @unique
+  passwordHash String
+  avatar       String?
+
+  // XP & Progression
+  totalXP      Int      @default(0)
+  level        Int      @default(1)
+  streak       Int      @default(0)
+  lastActiveAt DateTime @default(now())
+
+  // Plan
+  plan         PlanTier @default(FREE)
+
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  progress LessonProgress[]
-  scores   Score[]
+  // Relations
+  progress     LessonProgress[]
+  scores       Score[]
+  refreshTokens RefreshToken[]
 
-  @@map("lessons")
+  @@index([totalXP])
+  @@index([level])
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+model Lesson {
+  id          String     @id @default(uuid())
+  name        String
+  description String
+  instrument  Instrument
+  difficulty  Difficulty
+  bpm         Int
+  notes       Json       // Note[]
+  order       Int
+  xpReward    Int        @default(100)
+
+  // ── New categorisation fields ──────────────────────────
+  category       LessonCategory     @default(custom)
+  subcategory    LessonSubcategory?
+  composer       String?            // "Bach", "Hanon", "Chopin"
+  songTitle      String?            // "Minuet in G", "Exercise No.1"
+  requiredPlan   PlanTier           @default(FREE)
+  keySignature   String?            // "C" | "G" | "Am" etc
+  // ───────────────────────────────────────────────────────
+
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  // Relations
+  progress    LessonProgress[]
+  scores      Score[]
+
+  @@index([instrument])
+  @@index([instrument, category])
+  @@index([instrument, category, subcategory])
+  @@index([instrument, difficulty])
+  @@index([order])
 }
 
 model LessonProgress {
-  id         String    @id @default(cuid())
+  id         String    @id @default(uuid())
   userId     String
   lessonId   String
   unlocked   Boolean   @default(false)
@@ -108,33 +173,37 @@ model LessonProgress {
   bestScore  Float?
   attempts   Int       @default(0)
   lastPlayed DateTime?
+
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lesson     Lesson    @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
 
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  lesson Lesson @relation(fields: [lessonId], references: [id], onDelete: Cascade)
-
   @@unique([userId, lessonId])
-  @@map("lesson_progress")
+  @@index([userId])
+  @@index([lessonId])
 }
-
 model Score {
-  id             String   @id @default(cuid())
+  id             String     @id @default(uuid())
   userId         String
   lessonId       String
   noteAccuracy   Float
   timingAccuracy Float
   rhythmScore    Float
   overall        Float
-  grade          String
+  grade          Grade
   hits           Int
   misses         Int
   totalNotes     Int
-  bpmPlayed      Int
-  createdAt      DateTime @default(now())
+  bpmPlayed      Int?
 
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  lesson Lesson @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lesson  Lesson @relation(fields: [lessonId], references: [id], onDelete: Cascade)
 
-  @@map("scores")
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([lessonId])
+  @@index([userId, lessonId])
 }
