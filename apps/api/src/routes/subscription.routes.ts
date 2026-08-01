@@ -1,32 +1,24 @@
 import { Router }       from 'express'
 import { authenticate } from '../middleware/auth.middleware'
-import { PrismaClient, Plan } from '@prisma/client'
+import { PlanTier }     from '@prisma/client'
 import { sendSuccess, sendError } from '../utils/apiResponse'
 import { AuthRequest }  from '../middleware/auth.middleware'
 import {
   upgradePlan,
   cancelSubscription,
   getUserPlan,
-  PLAN_ACCESS,
-  PLAN_PRICES,
   PLAN_NAMES,
 } from '../services/subscription.service'
 
-const r      = Router()
-const prisma = new PrismaClient()
+const r = Router()
 
-// Get current subscription
+// Get current plan
 r.get('/current', authenticate, async (req: AuthRequest, res) => {
   try {
-    const sub = await prisma.subscription.findUnique({
-      where: { userId: req.user!.userId }
-    })
     const plan = await getUserPlan(req.user!.userId)
     return sendSuccess(res, {
-      subscription: sub,
-      currentPlan:  plan,
-      planName:     PLAN_NAMES[plan],
-      accessGrades: PLAN_ACCESS[plan],
+      currentPlan: plan,
+      planName:    PLAN_NAMES[plan],
     })
   } catch { return sendError(res, 'Failed', 500) }
 })
@@ -63,8 +55,8 @@ r.get('/plans', async (_, res) => {
 // Upgrade plan (mock payment for now)
 r.post('/upgrade', authenticate, async (req: AuthRequest, res) => {
   try {
-    const { plan } = req.body
-    if (!Object.values(Plan).includes(plan)) {
+    const { plan }: { plan: PlanTier } = req.body
+    if (!Object.values(PlanTier).includes(plan)) {
       return sendError(res, 'Invalid plan', 400)
     }
     await upgradePlan(req.user!.userId, plan)

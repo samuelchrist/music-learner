@@ -1,5 +1,5 @@
 import { Response }    from 'express'
-import { PrismaClient, Plan, Role } from '@prisma/client'
+import { PrismaClient, PlanTier, Role } from '@prisma/client'
 import { sendSuccess, sendError } from '../utils/apiResponse'
 import { AuthRequest } from '../middleware/auth.middleware'
 import {
@@ -32,11 +32,8 @@ export async function getAllUsers(req: AuthRequest, res: Response) {
         orderBy: { createdAt: 'desc' },
         select: {
           id: true, email: true, username: true,
-          role: true, totalXP: true, level: true,
+          role: true, plan: true, totalXP: true, level: true,
           streak: true, createdAt: true,
-          subscription: {
-            select: { plan: true, status: true, endDate: true }
-          },
           _count: {
             select: { progress: true, scores: true }
           }
@@ -65,7 +62,6 @@ export async function getUser(req: AuthRequest, res: Response) {
     const user = await prisma.user.findUnique({
       where:   { id: req.params.id },
       include: {
-        subscription: true,
         _count: { select: { progress: true, scores: true } },
       },
     })
@@ -106,11 +102,11 @@ export async function updateSubscription(req: AuthRequest, res: Response) {
       return sendSuccess(res, null, 'Subscription cancelled')
     }
 
-    if (!Object.values(Plan).includes(plan)) {
+    if (!Object.values(PlanTier).includes(plan)) {
       return sendError(res, 'Invalid plan', 400)
     }
 
-    await upgradePlan(userId, plan, 'admin-override')
+    await upgradePlan(userId, plan)
     return sendSuccess(res, null, `Plan upgraded to ${plan}`)
   } catch {
     return sendError(res, 'Failed to update subscription', 500)
@@ -177,21 +173,19 @@ export async function getDashboardStats(req: AuthRequest, res: Response) {
       recentUsers,
     ] = await Promise.all([
       prisma.user.count(),
-      prisma.subscription.count({ where: { status: 'ACTIVE' } }),
+      prisma.user.count({ where: { plan: { not: 'FREE' } } }),
       prisma.lesson.count(),
       prisma.score.count(),
-      prisma.subscription.groupBy({
+      prisma.user.groupBy({
         by:     ['plan'],
         _count: { plan: true },
-        where:  { status: 'ACTIVE' },
       }),
       prisma.user.findMany({
         take:    5,
         orderBy: { createdAt: 'desc' },
         select: {
           id: true, username: true, email: true,
-          createdAt: true,
-          subscription: { select: { plan: true } },
+          createdAt: true, plan: true,
         },
       }),
     ])
@@ -220,15 +214,15 @@ export async function getDashboardStats(req: AuthRequest, res: Response) {
 // ── Update lesson required plan ───────────────────────────────
 export async function updateLessonPlan(req: AuthRequest, res: Response) {
   try {
-    const { requiredPlan, grade } = req.body
+    const { requiredPlan } = req.body
 
-    if (!Object.values(Plan).includes(requiredPlan)) {
+    if (!Object.values(PlanTier).includes(requiredPlan)) {
       return sendError(res, 'Invalid plan', 400)
     }
 
     const lesson = await prisma.lesson.update({
       where: { id: req.params.id },
-      data:  { requiredPlan, grade },
+      data:  { requiredPlan },
     })
 
     return sendSuccess(res, lesson, 'Lesson updated')

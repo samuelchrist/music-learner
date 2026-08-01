@@ -146,7 +146,7 @@ export default function Practice() {
         setNStates(p => { const n = [...p]; n[waitMode.noteIndex] = 'hit'; return n })
         flash('GOOD', '#10b981')
       } else if (r === 'wrong') {
-        flash('✗', '#ef4444')
+        flash('MISS', '#ef4444')
       }
       return
     }
@@ -162,7 +162,7 @@ export default function Practice() {
         else if (velocity > 110)              flash('TOO HARD', '#ef4444')
         else                                  flash('GOOD', '#10b981')
       } else if (r === 'wrong') {
-        flash('✗', '#ef4444')
+        flash('MISS', '#ef4444')
       }
     }
   }, [sessionState, noteIndex, handleNoteOn, demoPlaying, mode, waitMode, lesson])
@@ -298,20 +298,18 @@ export default function Practice() {
     {
       label: 'Instrument',
       value: lesson.instrument.charAt(0).toUpperCase() + lesson.instrument.slice(1),
-      icon:  lesson.instrument === 'piano' ? '🎹' : lesson.instrument === 'guitar' ? '🎸' : '🥁',
       color: '#a855f7',
     },
     {
       label: 'Grade / Difficulty',
       value: `Grade ${(lesson as any).grade || 1} · ${lesson.difficulty}`,
-      icon: '📚', color: '#3b82f6',
+      color: '#3b82f6',
     },
     {
       label: demoPlaying ? 'Demo Note' : 'Current Note',
       value: currentNote
         ? currentNote.isRest ? 'Rest' : midiToScientific(currentNote.note)
         : '—',
-      icon: demoPlaying ? '👂' : '🎵',
       color: demoPlaying ? '#f59e0b' : '#10b981',
     },
     {
@@ -321,7 +319,7 @@ export default function Practice() {
         : sessionState === 'idle'
         ? `${lesson.notes.length} notes · ${lesson.bpm} BPM`
         : `${noteIndex + 1} / ${lesson.notes.length} · ${accuracy}%`,
-      icon: '📊', color: '#f59e0b',
+      color: '#f59e0b',
     },
     {
       label: 'Velocity',
@@ -330,7 +328,6 @@ export default function Practice() {
         : avgVelocity > 0
         ? `avg ${avgVelocity} · ${getVelocityLabel(avgVelocity)}`
         : '—',
-      icon: '💪',
       color: currentVelocity > 110 ? '#ef4444'
            : currentVelocity > 85  ? '#f97316'
            : currentVelocity > 55  ? '#10b981'
@@ -364,9 +361,6 @@ export default function Practice() {
           ← Lessons
         </Button>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontSize: 22 }}>
-            {lesson.instrument === 'piano' ? '🎹' : lesson.instrument === 'guitar' ? '🎸' : '🥁'}
-          </span>
           <h2 style={{ fontWeight: 700, fontSize: 16 }}>{lesson.name}</h2>
           {lesson.composer && (
             <span style={{ fontSize: 12, color: 'var(--text-sub)' }}>
@@ -390,7 +384,7 @@ export default function Practice() {
             border: '1px solid rgba(245,158,11,.3)',
             animation: 'pulse 1.5s infinite',
           }}>
-            👂 Listen Mode
+            Listen Mode
           </span>
         )}
 
@@ -406,7 +400,7 @@ export default function Practice() {
                 cursor: 'pointer', transition: 'all .2s',
               }}
             >
-              🎵 {metronomeOn ? 'Metro ON' : 'Metro OFF'}
+              {metronomeOn ? 'Metro ON' : 'Metro OFF'}
             </button>
           )}
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -493,7 +487,7 @@ export default function Practice() {
               {item.label}
             </p>
             <p style={{ fontWeight: 700, fontSize: 12, color: item.color }}>
-              {item.icon} {item.value}
+              {item.value}
             </p>
           </div>
         ))}
@@ -520,7 +514,7 @@ export default function Practice() {
       {/* ── Note display + velocity meter ── */}
       <div style={{
         display: 'flex', alignItems: 'stretch', gap: 12,
-        padding: view === 'synthesia' ? '12px 16px 0' : '12px 16px 16px',
+        padding: '12px 16px',
         background: demoPlaying ? 'rgba(245,158,11,0.03)' : 'var(--surface2)',
         transition: 'background .3s',
       }}>

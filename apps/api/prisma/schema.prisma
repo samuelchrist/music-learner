@@ -43,6 +43,12 @@ enum PlanTier {
   PRO
 }
 
+enum Role {
+  USER
+  ADMIN
+  SUPERADMIN
+}
+
 enum LessonCategory {
   abrsm
   classical
@@ -106,6 +112,7 @@ model User {
 
   // Plan
   plan         PlanTier @default(FREE)
+  role         Role     @default(USER)
 
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt

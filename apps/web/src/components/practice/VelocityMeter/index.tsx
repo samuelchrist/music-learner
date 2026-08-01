@@ -52,7 +52,7 @@ export default function VelocityMeter({
     return (
       <div style={{
         width:          76,
-        height:         '100%',
+        alignSelf:      'stretch',
         padding:        '10px 8px',
         background:     'var(--surface)',
         border:         '1px solid var(--border)',
@@ -286,7 +286,7 @@ export default function VelocityMeter({
         lineHeight:   1.5,
         maxWidth:     120,
       }}>
-        🎯 Aim for<br/>
+        Aim for<br/>
         <strong style={{ color: '#10b981' }}>mp–mf</strong><br/>
         (64–85)
       </div>

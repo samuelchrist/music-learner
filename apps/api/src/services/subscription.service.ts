@@ -1,58 +1,45 @@
-import { PrismaClient, Plan, Role } from '@prisma/client'
+import { PrismaClient, PlanTier, Role } from '@prisma/client'
 
 const prisma = new PrismaClient()
 
-// ── Plan access rules ─────────────────────────────────────────
-export const PLAN_ACCESS: Record<Plan, number[]> = {
-  FREE:  [1],           // Grade 1 only
-  BASIC: [1, 2, 3],    // Grade 1-3
-  PRO:   [1, 2, 3, 4, 5], // All grades
+// ── Plan rules ──────────────────────────────────────────────────
+export const PLAN_RANK: Record<PlanTier, number> = {
+  FREE:  0,
+  BASIC: 1,
+  PRO:   2,
 }
 
-export const PLAN_PRICES: Record<Plan, number> = {
+export const PLAN_PRICES: Record<PlanTier, number> = {
   FREE:  0,
   BASIC: 4.99,
   PRO:   9.99,
 }
 
-export const PLAN_NAMES: Record<Plan, string> = {
+export const PLAN_NAMES: Record<PlanTier, string> = {
   FREE:  'Free',
   BASIC: 'Basic',
   PRO:   'Pro',
 }
 
 // ── Get user plan ─────────────────────────────────────────────
-export async function getUserPlan(userId: string): Promise<Plan> {
-  const user = await prisma.user.findUnique({
-    where:   { id: userId },
-    include: { subscription: true },
-  })
-
-  if (!user) return Plan.FREE
+export async function getUserPlan(userId: string): Promise<PlanTier> {
+  const user = await prisma.user.findUnique({ where: { id: userId } })
+  if (!user) return PlanTier.FREE
 
   // Admins get full access
   if (user.role === Role.ADMIN || user.role === Role.SUPERADMIN) {
-    return Plan.PRO
+    return PlanTier.PRO
   }
 
-  // Check subscription
-  const sub = user.subscription
-  if (!sub || sub.status !== 'ACTIVE') return Plan.FREE
-  if (sub.endDate && sub.endDate < new Date()) return Plan.FREE
-
-  return sub.plan
+  return user.plan
 }
 
 // ── Check if user can access lesson ──────────────────────────
 export async function canAccessLesson(
   userId:   string,
   lessonId: string
-): Promise<{ allowed: boolean; reason?: string; requiredPlan?: Plan }> {
-  const user = await prisma.user.findUnique({
-    where:   { id: userId },
-    include: { subscription: true },
-  })
-
+): Promise<{ allowed: boolean; reason?: string; requiredPlan?: PlanTier }> {
+  const user = await prisma.user.findUnique({ where: { id: userId } })
   if (!user) return { allowed: false, reason: 'User not found' }
 
   // Admins always have access
@@ -63,13 +50,12 @@ export async function canAccessLesson(
   const lesson = await prisma.lesson.findUnique({ where: { id: lessonId } })
   if (!lesson) return { allowed: false, reason: 'Lesson not found' }
 
-  const userPlan   = await getUserPlan(userId)
-  const allowedGrades = PLAN_ACCESS[userPlan]
+  const userPlan = await getUserPlan(userId)
 
-  if (!allowedGrades.includes(lesson.grade)) {
+  if (PLAN_RANK[userPlan] < PLAN_RANK[lesson.requiredPlan]) {
     return {
       allowed:      false,
-      reason:       `This lesson requires ${PLAN_NAMES[lesson.requiredPlan]} plan`,
+      reason:       `This lesson requires the ${PLAN_NAMES[lesson.requiredPlan]} plan`,
       requiredPlan: lesson.requiredPlan,
     }
   }
@@ -77,72 +63,39 @@ export async function canAccessLesson(
   return { allowed: true }
 }
 
-// ── Upgrade subscription ──────────────────────────────────────
-export async function upgradePlan(
-  userId:    string,
-  plan:      Plan,
-  paymentRef?: string
-): Promise<void> {
-  const endDate = new Date()
-  endDate.setMonth(endDate.getMonth() + 1)
-
-  await prisma.subscription.upsert({
-    where:  { userId },
-    update: {
-      plan,
-      status:     'ACTIVE',
-      startDate:  new Date(),
-      endDate,
-      paymentRef: paymentRef || null,
-      autoRenew:  true,
-    },
-    create: {
-      userId,
-      plan,
-      status:     'ACTIVE',
-      startDate:  new Date(),
-      endDate,
-      paymentRef: paymentRef || null,
-      autoRenew:  true,
-    },
-  })
+// ── Upgrade plan ────────────────────────────────────────────────
+export async function upgradePlan(userId: string, plan: PlanTier): Promise<void> {
+  await prisma.user.update({ where: { id: userId }, data: { plan } })
 
   // Unlock all lessons for the new plan
   await unlockLessonsForPlan(userId, plan)
 }
 
-// ── Cancel subscription ───────────────────────────────────────
+// ── Cancel plan (revert to Free) ────────────────────────────────
 export async function cancelSubscription(userId: string): Promise<void> {
-  await prisma.subscription.update({
-    where:  { userId },
-    data:   { status: 'CANCELLED', autoRenew: false },
-  })
+  await prisma.user.update({ where: { id: userId }, data: { plan: PlanTier.FREE } })
 }
 
-// ── Unlock lessons based on plan ──────────────────────────────
+// ── Unlock lessons based on plan ────────────────────────────────
 export async function unlockLessonsForPlan(
   userId: string,
-  plan:   Plan
+  plan:   PlanTier
 ): Promise<void> {
-  const allowedGrades = PLAN_ACCESS[plan]
+  const allowedRank = PLAN_RANK[plan]
+  const allowedPlans = (Object.keys(PLAN_RANK) as PlanTier[])
+    .filter(p => PLAN_RANK[p] <= allowedRank)
 
-  // Get all lessons for allowed grades
+  // Get all lessons this plan tier grants access to
   const lessons = await prisma.lesson.findMany({
-    where: { grade: { in: allowedGrades } },
+    where: { requiredPlan: { in: allowedPlans } },
   })
 
-  // Unlock first lesson per instrument per grade
-  // and all previously completed ones
+  // Unlock first lesson per instrument and all lessons after a completed one
   for (const lesson of lessons) {
     const isFirst = lesson.order === 1
 
-    // Check if previous lesson completed
     const prevLesson = await prisma.lesson.findFirst({
-      where: {
-        instrument: lesson.instrument,
-        order:      lesson.order - 1,
-        grade:      lesson.grade,
-      },
+      where: { instrument: lesson.instrument, order: lesson.order - 1 },
     })
 
     let shouldUnlock = isFirst

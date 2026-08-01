@@ -11,21 +11,8 @@ async function main() {
 
   const user = await prisma.user.update({
     where: { email },
-    data:  { role: 'SUPERADMIN' },
-    select: { id: true, email: true, username: true, role: true },
-  })
-
-  // Give admin full PRO subscription
-  await prisma.subscription.upsert({
-    where:  { userId: user.id },
-    update: { plan: 'PRO', status: 'ACTIVE', endDate: null },
-    create: {
-      userId:   user.id,
-      plan:     'PRO',
-      status:   'ACTIVE',
-      endDate:  null,
-      autoRenew: false,
-    },
+    data:  { role: 'SUPERADMIN', plan: 'PRO' },
+    select: { id: true, email: true, username: true, role: true, plan: true },
   })
 
   // Unlock all lessons
