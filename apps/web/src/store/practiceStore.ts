@@ -8,7 +8,7 @@ interface S {
   bpm:number; metronomeOn:boolean; hits:number
   setLesson:(l:Lesson)=>void; setSessionState:(s:State)=>void
   setNoteIndex:(i:number)=>void; setBPM:(b:number)=>void
-  toggleMetronome:()=>void; incrementHits:()=>void; reset:()=>void
+  toggleMetronome:()=>void; setMetronomeOn:(v:boolean)=>void; incrementHits:()=>void; reset:()=>void
 }
 
 export const usePracticeStore = create<S>()(set => ({
@@ -18,6 +18,7 @@ export const usePracticeStore = create<S>()(set => ({
   setNoteIndex:    i => set({noteIndex:i}),
   setBPM:          b => set({bpm:b}),
   toggleMetronome: () => set(s => ({metronomeOn:!s.metronomeOn})),
+  setMetronomeOn:  v  => set({metronomeOn:v}),
   incrementHits:   () => set(s => ({hits:s.hits+1})),
   reset: () => set({sessionState:'idle', noteIndex:0, hits:0})
 }))

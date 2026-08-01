@@ -19,7 +19,6 @@ import GuitarFretboard             from '@/components/practice/GuitarFretboard'
 import DrumKit                     from '@/components/practice/DrumPad'
 import FeedbackFlash               from '@/components/practice/FeedbackFlash'
 import Countdown                   from '@/components/practice/Countdown'
-import KeyboardGuide               from '@/components/practice/KeyboardGuide'
 import VelocityMeter               from '@/components/practice/VelocityMeter'
 import ScoreBoard                  from '@/components/score/ScoreBoard'
 import Button                      from '@/components/ui/Button'
@@ -52,7 +51,7 @@ export default function Practice() {
   const nav           = useNavigate()
   const { data: lesson, isLoading } = useLesson(lessonId!)
   const { sessionState, noteIndex, setLesson } = usePracticeStore()
-  const { bpm: currentBPM, adjustBPM, metronomeOn, toggleMetronome, setBPM } = useMetronome()
+  const { bpm: currentBPM, adjustBPM, metronomeOn, toggleMetronome, setMetronomeOn, setBPM } = useMetronome()
   const { startSession, handleNoteOn, restartSession, getScore, getFeedback } = usePracticeSession()
   const { isPlaying: demoPlaying, demoNoteIdx, demoHitIdx, demoActive, startDemo, stopDemo } = useDemoPlayer()
   const waitMode = useWaitMode()
@@ -67,6 +66,7 @@ export default function Practice() {
   const [unlocked,     setUnlocked] = useState(false)
   const [hits,         setHits]     = useState(0)
   const [view,         setView]     = useState<'staff' | 'synthesia'>('staff')
+  const [rollScrollLeft, setRollScrollLeft] = useState(0)
   const [mode, setMode] = useState<'listen' | 'wait' | 'playalong'>('listen')
   const [preCountdown, setPreCountdown] = useState<{ message: string; color: string; onDone: () => void } | null>(null)
 
@@ -210,7 +210,7 @@ export default function Practice() {
   // In demo mode — use demoActive for highlights, demoNoteIdx for scroll
   const displayActive   = demoPlaying ? demoActive : activeNotes
   const displayExpected = demoPlaying
-    ? (lesson.notes[demoNoteIdx]?.isRest ? undefined : lesson.notes[demoNoteIdx]?.note)
+    ? (lesson.notes[demoHitIdx]?.isRest ? undefined : lesson.notes[demoHitIdx]?.note)
     : mode === 'wait'
     ? (lesson.notes[waitMode.noteIndex]?.isRest ? undefined : lesson.notes[waitMode.noteIndex]?.note)
     : expectedNote
@@ -267,6 +267,8 @@ export default function Practice() {
             endMidi={108}
             onKeyPress={(midi, vel) => onNoteOn(midi, vel)}
             onKeyRelease={midi => onNoteOff(midi)}
+            scrollLeft={rollScrollLeft}
+            onScrollChange={setRollScrollLeft}
           />
         )
     }
@@ -393,6 +395,52 @@ export default function Practice() {
         )}
 
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 12 }}>
+          {(mode === 'playalong' || mode === 'wait') && (
+            <button
+              onClick={toggleMetronome}
+              style={{
+                padding: '5px 12px', borderRadius: 8, fontSize: 12, fontWeight: 600,
+                border: `1px solid ${metronomeOn ? '#10b981' : 'var(--border)'}`,
+                background: metronomeOn ? 'rgba(16,185,129,.1)' : 'var(--surface2)',
+                color: metronomeOn ? '#10b981' : 'var(--text-dim)',
+                cursor: 'pointer', transition: 'all .2s',
+              }}
+            >
+              🎵 {metronomeOn ? 'Metro ON' : 'Metro OFF'}
+            </button>
+          )}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <button onClick={() => adjustBPM(-1)} style={{
+              width: 26, height: 26, borderRadius: 8,
+              border: '1px solid var(--border)',
+              background: 'var(--surface2)', color: 'var(--text)',
+              cursor: 'pointer', fontSize: 14,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>−</button>
+            <input
+              type="range" min={20} max={300} value={currentBPM}
+              onChange={e => setBPM(Number(e.target.value))}
+              style={{ width: 80, accentColor: '#a855f7' }}
+            />
+            <button onClick={() => adjustBPM(1)} style={{
+              width: 26, height: 26, borderRadius: 8,
+              border: '1px solid var(--border)',
+              background: 'var(--surface2)', color: 'var(--text)',
+              cursor: 'pointer', fontSize: 14,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>+</button>
+            <input
+              type="number" min={20} max={300} value={currentBPM}
+              onChange={e => { const v = Number(e.target.value); if (v >= 20 && v <= 300) setBPM(v) }}
+              style={{
+                width: 48, background: 'var(--surface2)',
+                border: '1px solid var(--border)', borderRadius: 6,
+                padding: '3px 6px', fontSize: 13, color: 'var(--text)',
+                textAlign: 'center', outline: 'none',
+              }}
+            />
+            <span style={{ fontSize: 12, color: 'var(--text-sub)' }}>BPM</span>
+          </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{
               width: 8, height: 8, borderRadius: '50%',
@@ -420,14 +468,7 @@ export default function Practice() {
             ) : (
               <span style={{ fontSize: 12, color: 'var(--text-sub)' }}>Keyboard Mode</span>
             )}
-          </div>          <span style={{
-            color: '#a855f7', fontWeight: 700, fontSize: 14,
-            background: 'rgba(168,85,247,.1)',
-            padding: '4px 12px', borderRadius: 8,
-            border: '1px solid rgba(168,85,247,.2)',
-          }}>
-            ♩ {currentBPM} BPM
-          </span>
+          </div>
         </div>
       </div>
 
@@ -476,176 +517,111 @@ export default function Practice() {
           </button>
         ))}
       </div>
-      {/* ── Note display ── */}
+      {/* ── Note display + velocity meter ── */}
       <div style={{
-        flex: 1, padding: '12px 16px 16px',
+        display: 'flex', alignItems: 'stretch', gap: 12,
+        padding: view === 'synthesia' ? '12px 16px 0' : '12px 16px 16px',
         background: demoPlaying ? 'rgba(245,158,11,0.03)' : 'var(--surface2)',
-        overflowX: 'auto', minHeight: 120,
         transition: 'background .3s',
       }}>
-        {view === 'staff' ? (
-          <StaffNotation
-            notes={lesson.notes}
-            currentIdx={displayHitIdx}
-            instrument={lesson.instrument}
-            bpm={currentBPM}
-            timeSignature={[4, 4]}
-            keySignature={(lesson as any).keySignature || 'C'}
+        <div style={{ flex: 1, overflowX: 'auto', minHeight: 120 }}>
+          {view === 'staff' ? (
+            <StaffNotation
+              notes={lesson.notes}
+              currentIdx={displayHitIdx}
+              instrument={lesson.instrument}
+              bpm={currentBPM}
+              timeSignature={[4, 4]}
+              keySignature={(lesson as any).keySignature || 'C'}
+              isPlaying={demoPlaying || sessionState === 'playing'}
+              waitBeat={mode === 'wait' && waitMode.isActive ? (lesson.notes[waitMode.noteIndex]?.beat ?? 1) - 1 : undefined}
+            />
+          ) : (
+            <SynthesiaRoll
+              notes={lesson.notes}
+              currentIdx={displayNoteIdx}
+              hitIdx={demoPlaying ? demoHitIdx : displayNoteIdx}
+              bpm={currentBPM}
+              isPlaying={demoPlaying || sessionState === 'playing'}
+              states={displayNoteStates}
+              isDemoMode={demoPlaying}
+              waitBeat={mode === 'wait' && waitMode.isActive ? (lesson.notes[waitMode.noteIndex]?.beat ?? 1) - 1 : undefined}
+              scrollLeft={rollScrollLeft}
+              onScrollChange={setRollScrollLeft}
+            />
+          )}
+        </div>
+
+        {lesson.instrument === 'piano' && !demoPlaying && (
+          <VelocityMeter
+            vertical
+            velocity={currentVelocity}
+            noteCount={velocityHistory.length}
+            avgVelocity={avgVelocity}
+            minVelocity={minVelocity}
+            maxVelocity={maxVelocity}
           />
-        ) : (
-          <SynthesiaRoll
-            notes={lesson.notes}
-            currentIdx={displayNoteIdx}
-            hitIdx={demoPlaying ? demoHitIdx : displayNoteIdx}
-            bpm={currentBPM}
-            isPlaying={demoPlaying || sessionState === 'playing'}
-            activeNotes={displayActive}
-            states={displayNoteStates}
-            isDemoMode={demoPlaying}
-            waitBeat={mode === 'wait' && waitMode.isActive ? (lesson.notes[waitMode.noteIndex]?.beat ?? 1) - 1 : undefined}
-          />
-        )}      </div>
-
-      {/* ── Instrument visual — hide piano in synthesia mode ── */}
-      {!(view === 'synthesia' && lesson.instrument === 'piano') && renderInstrument()}
-      {/* ── Velocity meter ── */}
-      {lesson.instrument === 'piano' && !demoPlaying && (
-        <VelocityMeter
-          velocity={currentVelocity}
-          noteCount={velocityHistory.length}
-          avgVelocity={avgVelocity}
-          minVelocity={minVelocity}
-          maxVelocity={maxVelocity}
-        />
-      )}
-
-      {/* ── Keyboard guide ── */}
-      {!demoPlaying && <KeyboardGuide instrument={lesson.instrument as any} />}
-
-      {/* ── Mode Selector ── */}
-      <div style={{
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        gap: 8, padding: '10px 20px',
-        background: 'var(--surface)', borderTop: '1px solid var(--border)',
-      }}>
-        {([
-          { id: 'listen',   icon: '👂', label: 'Listen',    color: '#f59e0b' },
-          { id: 'wait',     icon: '⏳', label: 'Wait',      color: '#10b981' },
-          { id: 'playalong',icon: '🎵', label: 'Play Along', color: '#a855f7' },
-        ] as const).map(m => (
-          <button
-            key={m.id}
-            onClick={() => {
-              stopDemo()
-              waitMode.stop()
-              restartSession()
-              setNStates(lesson.notes.map(() => 'pending'))
-              setHits(0)
-              setMode(m.id)
-              const messages = {
-                listen:    { message: '👂 Listen Mode — Watch the notes play',    color: '#f59e0b' },
-                wait:      { message: '⏳ Wait Mode — Play each note when ready', color: '#10b981' },
-                playalong: { message: '🎵 Play Along — Follow the rhythm!',       color: '#a855f7' },
-              }
-              const { message, color } = messages[m.id]
-              setPreCountdown({
-                message,
-                color,
-                onDone: () => {
-                  setPreCountdown(null)
-                  if (m.id === 'listen')    handleToggleDemo()
-                  if (m.id === 'wait')      waitMode.start(lesson.notes)
-                  if (m.id === 'playalong') startSession()
-                }
-              })
-            }}
-            style={{
-              padding: '7px 18px', borderRadius: 10,
-              fontSize: 13, fontWeight: 700,
-              border: `2px solid ${mode === m.id ? m.color : 'var(--border)'}`,
-              background: mode === m.id ? `${m.color}22` : 'var(--surface2)',
-              color: mode === m.id ? m.color : 'var(--text-sub)',
-              cursor: 'pointer', transition: 'all .2s',
-            }}
-          >
-            {m.icon} {m.label}
-          </button>
-        ))}
+        )}
       </div>
 
-      {/* ── Controls ── */}
+      {/* ── Instrument visual ── */}
+      {renderInstrument()}
+
+      {/* ── Mode Selector + Start/Stop ── */}
       <div style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '12px 20px', background: 'var(--surface)',
-        borderTop: '1px solid var(--border)', flexWrap: 'wrap', gap: 12,
+        padding: '10px 20px',
+        background: 'var(--surface)', borderTop: '1px solid var(--border)',
+        flexWrap: 'wrap', gap: 8,
       }}>
-        {/* BPM + Metronome */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          {mode === 'playalong' && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {([
+            { id: 'listen',   icon: '👂', label: 'Listen',    color: '#f59e0b' },
+            { id: 'wait',     icon: '⏳', label: 'Wait',      color: '#10b981' },
+            { id: 'playalong',icon: '🎵', label: 'Play Along', color: '#a855f7' },
+          ] as const).map(m => (
             <button
-              onClick={toggleMetronome}
+              key={m.id}
+              onClick={() => {
+                stopDemo()
+                waitMode.stop()
+                restartSession()
+                setNStates(lesson.notes.map(() => 'pending'))
+                setHits(0)
+                setMode(m.id)
+                if (m.id === 'wait' || m.id === 'playalong') setMetronomeOn(true)
+                const messages = {
+                  listen:    { message: '👂 Listen Mode — Watch the notes play',    color: '#f59e0b' },
+                  wait:      { message: '⏳ Wait Mode — Play each note when ready', color: '#10b981' },
+                  playalong: { message: '🎵 Play Along — Follow the rhythm!',       color: '#a855f7' },
+                }
+                const { message, color } = messages[m.id]
+                setPreCountdown({
+                  message,
+                  color,
+                  onDone: () => {
+                    setPreCountdown(null)
+                    if (m.id === 'listen')    handleToggleDemo()
+                    if (m.id === 'wait')      waitMode.start(lesson.notes)
+                    if (m.id === 'playalong') startSession(view === 'synthesia')
+                  }
+                })
+              }}
               style={{
-                padding: '7px 12px', borderRadius: 8, fontSize: 12, fontWeight: 600,
-                border: `1px solid ${metronomeOn ? '#10b981' : 'var(--border)'}`,
-                background: metronomeOn ? 'rgba(16,185,129,.1)' : 'var(--surface2)',
-                color: metronomeOn ? '#10b981' : 'var(--text-dim)',
+                padding: '7px 18px', borderRadius: 10,
+                fontSize: 13, fontWeight: 700,
+                border: `2px solid ${mode === m.id ? m.color : 'var(--border)'}`,
+                background: mode === m.id ? `${m.color}22` : 'var(--surface2)',
+                color: mode === m.id ? m.color : 'var(--text-sub)',
                 cursor: 'pointer', transition: 'all .2s',
               }}
             >
-              🎵 {metronomeOn ? 'Metro ON' : 'Metro OFF'}
+              {m.icon} {m.label}
             </button>
-          )}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <button onClick={() => adjustBPM(-1)} style={{
-              width: 30, height: 30, borderRadius: 8,
-              border: '1px solid var(--border)',
-              background: 'var(--surface2)', color: 'var(--text)',
-              cursor: 'pointer', fontSize: 16,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-            }}>−</button>
-            <input
-              type="range" min={20} max={300} value={currentBPM}
-              onChange={e => setBPM(Number(e.target.value))}
-              style={{ width: 90, accentColor: '#a855f7' }}
-            />
-            <button onClick={() => adjustBPM(1)} style={{
-              width: 30, height: 30, borderRadius: 8,
-              border: '1px solid var(--border)',
-              background: 'var(--surface2)', color: 'var(--text)',
-              cursor: 'pointer', fontSize: 16,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-            }}>+</button>
-            <input
-              type="number" min={20} max={300} value={currentBPM}
-              onChange={e => { const v = Number(e.target.value); if (v >= 20 && v <= 300) setBPM(v) }}
-              style={{
-                width: 52, background: 'var(--surface2)',
-                border: '1px solid var(--border)', borderRadius: 6,
-                padding: '3px 6px', fontSize: 13, color: 'var(--text)',
-                textAlign: 'center', outline: 'none',
-              }}
-            />
-            <span style={{ fontSize: 12, color: 'var(--text-sub)' }}>BPM</span>
-          </div>
+          ))}
         </div>
 
-        {/* Action buttons */}
-        <div style={{ display: 'flex', gap: 8 }}>
-          {/* Restart */}
-          <Button
-            variant="secondary"
-            onClick={() => {
-              stopDemo()
-              waitMode.stop()
-              restartSession()
-              setNStates(lesson.notes.map(() => 'pending'))
-              setHits(0)
-              setVelocityHistory([])
-            }}
-          >
-            ↺ Restart
-          </Button>
-
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           {/* Listen mode */}
           {mode === 'listen' && (
             <button
@@ -690,12 +666,26 @@ export default function Practice() {
           {/* Play Along mode */}
           {mode === 'playalong' && (
             <Button
-              onClick={startSession}
+              onClick={() => startSession(view === 'synthesia')}
               disabled={sessionState !== 'idle'}
             >
               ▶ Start (3-2-1)
             </Button>
           )}
+
+          <Button
+            variant="secondary"
+            onClick={() => {
+              stopDemo()
+              waitMode.stop()
+              restartSession()
+              setNStates(lesson.notes.map(() => 'pending'))
+              setHits(0)
+              setVelocityHistory([])
+            }}
+          >
+            ↺ Restart
+          </Button>
         </div>
       </div>
     </div>

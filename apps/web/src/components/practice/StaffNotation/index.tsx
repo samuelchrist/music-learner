@@ -8,6 +8,8 @@ interface Props {
   bpm?:           number
   timeSignature?: [number, number]
   keySignature?:  string
+  isPlaying?:     boolean   // Play Along / Listen — advances on a real tempo clock
+  waitBeat?:      number    // Wait mode — current note's beat; clock glides to it, then holds
 }
 
 const VEX_NAMES = ['c','c#','d','d#','e','f','f#','g','g#','a','a#','b']
@@ -62,9 +64,23 @@ function groupIntoBars(notes: Note[], beatsPerBar: number): Note[][] {
   return bars
 }
 
-const STAFF_COLOR  = '#94a3b8'
-const CLEF_COLOR   = '#334155'
-const BARS_VISIBLE = 2
+const STAFF_COLOR = '#94a3b8'
+const CLEF_COLOR  = '#334155'
+
+// Fixed pixel-per-beat (not viewport-fit) so elapsed-beats-to-pixels stays
+// exactly linear — required for the scroll to move at a constant, tempo-
+// matched speed instead of stretching bars to fill whatever width is available.
+const PX_PER_BEAT       = 90
+const LEFT_PAD          = 0     // clef/key/time now live in the fixed panel, so the track's bar 0 starts flush
+const BRACE_GUTTER      = 16    // room left of the staves for the grand-staff brace + start barline
+const CLEF_PANEL_W      = 140   // fixed left gutter: clef + key sig + time sig + tempo, never scrolls
+const PLAYHEAD_X        = CLEF_PANEL_W + 4   // fixed viewport x the "now" line sits at (right after the clef gutter)
+const RENDER_WINDOW_BARS = 12   // bars rendered into the SVG at once
+const LOOKBACK_BARS      = 2    // bars of history kept visible behind the playhead on a re-center
+
+// Matches SynthesiaRoll's ROLL_H so the two views share the same window
+// height and toggling between them doesn't shift the instrument visual below.
+const STAFF_H = 323
 
 export default function StaffNotation({
   notes,
@@ -73,33 +89,65 @@ export default function StaffNotation({
   bpm           = 120,
   timeSignature = [4, 4],
   keySignature  = 'C',
+  isPlaying     = false,
+  waitBeat,
 }: Props) {
-  const containerRef = useRef<HTMLDivElement>(null)
-  const isPiano      = instrument === 'piano'
+  const trackRef  = useRef<HTMLDivElement>(null)
+  const clefRef   = useRef<HTMLDivElement>(null)
+  const isPiano   = instrument === 'piano'
   const [beatsPerBar, beatValue] = timeSignature
   const vexKey = KEY_MAP[keySignature] || 'C'
 
+  // ── Rendered-window bookkeeping ──────────────────────────────
+  const windowStartRef      = useRef(0)   // first bar index currently rendered into the SVG
+  const windowBeatOffsetRef = useRef(0)   // beats at the start of that window (= windowStart * beatsPerBar)
+
+  // ── Playback clock (mirrors SynthesiaRoll's, leadInBeats = 0 — a note
+  //     is current exactly when due, no falling-note pre-roll here) ────
+  const startRef      = useRef<number>(0)
+  const startBeatRef  = useRef<number>(0)
+  const curBeatRef    = useRef<number>(0)
+  const waitTargetRef = useRef<number>(0)
+
   useEffect(() => {
-    const el = containerRef.current
+    if (isPlaying) {
+      startRef.current     = performance.now()
+      startBeatRef.current = 0
+    } else if (waitBeat !== undefined) {
+      // Continue from wherever the track currently sits — rebasing to the
+      // new note's beat would make the track jump instead of glide.
+      startRef.current     = performance.now()
+      startBeatRef.current = curBeatRef.current
+      waitTargetRef.current = waitBeat
+    } else {
+      curBeatRef.current = 0
+    }
+  }, [isPlaying, waitBeat])
+
+  // ── VexFlow render — only re-runs on layout/coloring changes, never per-frame ──
+  useEffect(() => {
+    const el = trackRef.current
     if (!el || !notes.length) return
 
-    import('vexflow').then((VF) => {
+    import('vexflow').then(async (VF) => {
+      // VexFlow's Bravura music font loads async via the FontFace API and its
+      // module resolves before the font is ready, so drawing immediately can
+      // paint noteheads with a fallback glyph (misaligned stems) until the
+      // next redraw. Wait for it once so the first paint is already correct.
+      if (typeof document !== 'undefined' && document.fonts) {
+        try { await document.fonts.ready } catch { /* unsupported, draw anyway */ }
+      }
+      if (trackRef.current !== el) return
+
       const { Renderer, Stave, StaveNote, Voice, Formatter, Accidental } = VF
 
       el.innerHTML = ''
 
-      const W        = el.clientWidth || 760
-      const height   = isPiano ? 270 : 170
-      const TREBLE_Y = 36
-      const BASS_Y   = 150
-      const LEFT_PAD = 20
-
-      const renderer = new Renderer(el, Renderer.Backends.SVG)
-      renderer.resize(W, height)
-      const ctx = renderer.getContext()
-
-      const svg = el.querySelector('svg')
-      if (svg) svg.style.background = 'transparent'
+      const height   = STAFF_H
+      const yOffset  = Math.round((STAFF_H - (isPiano ? 270 : 170)) / 2)
+      const TREBLE_Y = 36 + yOffset
+      const BASS_Y   = 150 + yOffset
+      const barW     = beatsPerBar * PX_PER_BEAT
 
       const allBars = groupIntoBars(notes, beatsPerBar)
 
@@ -111,24 +159,34 @@ export default function StaffNotation({
         if (noteCount > currentIdx) { currentBar = b; break }
       }
 
-      const startBar = Math.max(0, Math.min(currentBar, allBars.length - BARS_VISIBLE))
-      const visiBars = allBars.slice(startBar, startBar + BARS_VISIBLE)
-      const barW     = (W - LEFT_PAD - 30) / BARS_VISIBLE
+      // Re-center the rendered window only when the current bar has drifted
+      // outside it — keeps the same bars (and same on-screen x positions)
+      // across most redraws, so the continuous scroll doesn't visibly cut.
+      if (currentBar < windowStartRef.current || currentBar > windowStartRef.current + RENDER_WINDOW_BARS - 3) {
+        windowStartRef.current = Math.max(0, currentBar - LOOKBACK_BARS)
+      }
+      const startBar = windowStartRef.current
+      windowBeatOffsetRef.current = startBar * beatsPerBar
+
+      const visiBars = allBars.slice(startBar, startBar + RENDER_WINDOW_BARS)
+      const totalW   = LEFT_PAD + visiBars.length * barW + 40
+
+      const renderer = new Renderer(el, Renderer.Backends.SVG)
+      renderer.resize(totalW, height)
+      const ctx = renderer.getContext()
+
+      const svg = el.querySelector('svg')
+      if (svg) svg.style.background = 'transparent'
 
       let absOffset = 0
       for (let b = 0; b < startBar; b++) absOffset += allBars[b].length
 
       visiBars.forEach((barNotes, barIdx) => {
+        const absBarIdx  = startBar + barIdx
         const x          = LEFT_PAD + barIdx * barW
-        const isFirstBar = barIdx === 0
 
         // ── Treble stave ──
         const treble = new Stave(x, TREBLE_Y, barW)
-        if (isFirstBar) {
-          treble.addClef('treble')
-          treble.addKeySignature(vexKey)
-          treble.addTimeSignature(`${beatsPerBar}/${beatValue}`)
-        }
         treble.setStyle({ fillStyle: CLEF_COLOR, strokeStyle: STAFF_COLOR })
         treble.setContext(ctx).draw()
 
@@ -136,46 +194,15 @@ export default function StaffNotation({
         let bass: any = null
         if (isPiano) {
           bass = new Stave(x, BASS_Y, barW)
-          if (isFirstBar) {
-            bass.addClef('bass')
-            bass.addKeySignature(vexKey)
-            bass.addTimeSignature(`${beatsPerBar}/${beatValue}`)
-          }
           bass.setStyle({ fillStyle: CLEF_COLOR, strokeStyle: STAFF_COLOR })
           bass.setContext(ctx).draw()
-        }
-
-        // ── Brace + connector ──
-        if (isFirstBar && isPiano) {
-          try {
-            const { StaveConnector } = VF as any
-            if (StaveConnector) {
-              const brace = new StaveConnector(treble, bass)
-              brace.setType(3)
-              brace.setStyle({ fillStyle: CLEF_COLOR, strokeStyle: CLEF_COLOR })
-              brace.setContext(ctx).draw()
-              const bar = new StaveConnector(treble, bass)
-              bar.setType(1)
-              bar.setStyle({ fillStyle: STAFF_COLOR, strokeStyle: STAFF_COLOR })
-              bar.setContext(ctx).draw()
-            }
-          } catch (_) {}
-        }
-
-        // ── Tempo + key label ──
-        if (isFirstBar) {
-          ctx.save()
-          ctx.setFont('Arial', 14, 'bold')
-          ctx.setFillStyle('#1e293b')
-          ctx.fillText(`♩ = ${bpm}`, x + (isPiano ? 90 : 65), TREBLE_Y - 14)
-          ctx.restore()
         }
 
         // ── Bar number ──
         ctx.save()
         ctx.setFont('Arial', 9, 'normal')
         ctx.setFillStyle('#94a3b8')
-        ctx.fillText(`${startBar + barIdx + 1}`, x + 4, TREBLE_Y - 4)
+        ctx.fillText(`${absBarIdx + 1}`, x + 4, TREBLE_Y - 4)
         ctx.restore()
 
         // ── Build tickables ──
@@ -231,7 +258,7 @@ export default function StaffNotation({
         // ── Format & draw ──
         try {
           if (trebleTicks.length === 0) return
-          const formatW = barW - (isFirstBar ? 100 : 20)
+          const formatW = barW - 20
 
           const tv = new Voice({ numBeats: beatsPerBar, beatValue }).setStrict(false)
           tv.addTickables(trebleTicks)
@@ -253,15 +280,147 @@ export default function StaffNotation({
     })
   }, [notes, currentIdx, instrument, bpm, timeSignature, keySignature])
 
+  // ── Fixed clef/key/time-signature gutter — drawn once, never scrolls, so it
+  //     stays visible the whole time instead of vanishing once the track
+  //     scrolls the actual first bar off-screen. ──
+  useEffect(() => {
+    const el = clefRef.current
+    if (!el) return
+
+    import('vexflow').then(async (VF) => {
+      if (typeof document !== 'undefined' && document.fonts) {
+        try { await document.fonts.ready } catch { /* unsupported, draw anyway */ }
+      }
+      if (clefRef.current !== el) return
+
+      const { Renderer, Stave, StaveConnector, Barline } = VF as any
+
+      el.innerHTML = ''
+
+      const height    = STAFF_H
+      const yOffset   = Math.round((STAFF_H - (isPiano ? 270 : 170)) / 2)
+      const TREBLE_Y  = 36 + yOffset
+      const BASS_Y    = 150 + yOffset
+      const staveX    = BRACE_GUTTER
+      const staveW    = CLEF_PANEL_W - BRACE_GUTTER
+      const NONE_BAR  = Barline?.type?.NONE ?? 7
+
+      const renderer = new Renderer(el, Renderer.Backends.SVG)
+      renderer.resize(CLEF_PANEL_W + 10, height)
+      const ctx = renderer.getContext()
+
+      const svg = el.querySelector('svg')
+      if (svg) svg.style.background = 'transparent'
+
+      const treble = new Stave(staveX, TREBLE_Y, staveW)
+      treble.addClef('treble')
+      treble.addKeySignature(vexKey)
+      treble.addTimeSignature(`${beatsPerBar}/${beatValue}`)
+      treble.setBegBarType(NONE_BAR)
+      treble.setEndBarType(NONE_BAR)
+      treble.setStyle({ fillStyle: CLEF_COLOR, strokeStyle: STAFF_COLOR })
+      treble.setContext(ctx).draw()
+
+      let bass: any = null
+      if (isPiano) {
+        bass = new Stave(staveX, BASS_Y, staveW)
+        bass.addClef('bass')
+        bass.addKeySignature(vexKey)
+        bass.addTimeSignature(`${beatsPerBar}/${beatValue}`)
+        bass.setBegBarType(NONE_BAR)
+        bass.setEndBarType(NONE_BAR)
+        bass.setStyle({ fillStyle: CLEF_COLOR, strokeStyle: STAFF_COLOR })
+        bass.setContext(ctx).draw()
+
+        try {
+          if (StaveConnector) {
+            const BRACE            = StaveConnector.type?.BRACE ?? 3
+            const BOLD_DOUBLE_LEFT = StaveConnector.type?.BOLD_DOUBLE_LEFT ?? 5
+            const brace = new StaveConnector(treble, bass)
+            brace.setType(BRACE)
+            brace.setStyle({ fillStyle: CLEF_COLOR, strokeStyle: CLEF_COLOR })
+            brace.setContext(ctx).draw()
+            const bar = new StaveConnector(treble, bass)
+            bar.setType(BOLD_DOUBLE_LEFT)
+            bar.setStyle({ fillStyle: STAFF_COLOR, strokeStyle: STAFF_COLOR })
+            bar.setContext(ctx).draw()
+          }
+        } catch (_) {}
+      }
+
+      ctx.save()
+      ctx.setFont('Arial', 14, 'bold')
+      ctx.setFillStyle('#1e293b')
+      ctx.fillText(`♩ = ${bpm}`, 4, TREBLE_Y - 14)
+      ctx.restore()
+    })
+  }, [instrument, isPiano, vexKey, beatsPerBar, beatValue, bpm])
+
+  // ── Continuous scroll — cheap CSS transform, no VexFlow work per frame ──
+  useEffect(() => {
+    let raf = 0
+    const tick = () => {
+      let cb = curBeatRef.current
+      if (isPlaying) {
+        const elapsed = (performance.now() - startRef.current) / 1000
+        cb = startBeatRef.current + elapsed * (bpm / 60)
+      } else if (waitBeat !== undefined) {
+        const elapsed  = (performance.now() - startRef.current) / 1000
+        const animBeat = startBeatRef.current + elapsed * (bpm / 60)
+        cb = Math.min(animBeat, waitTargetRef.current)
+      }
+      curBeatRef.current = cb
+
+      if (trackRef.current) {
+        const localBeat = cb - windowBeatOffsetRef.current
+        const x = PLAYHEAD_X - (LEFT_PAD + localBeat * PX_PER_BEAT)
+        trackRef.current.style.transform = `translateX(${x}px)`
+      }
+
+      if (isPlaying || waitBeat !== undefined) raf = requestAnimationFrame(tick)
+    }
+    tick()
+    return () => { if (raf) cancelAnimationFrame(raf) }
+  }, [isPlaying, waitBeat, bpm])
+
+  const height = STAFF_H
+
   return (
     <div style={{
       background:   '#ffffff',
       borderRadius: 10,
       padding:      '8px 4px 4px',
       border:       '2px solid #e2e8f0',
-      minHeight:    isPiano ? 280 : 180,
+      minHeight:    STAFF_H + 10,
+      display:      'flex',
+      flexDirection: 'column',
     }}>
-      <div ref={containerRef} style={{ width: '100%' }} />
+      <div style={{ position: 'relative', width: '100%', height, overflow: 'hidden' }}>
+        <div ref={trackRef} style={{ position: 'absolute', top: 0, left: 0, zIndex: 1 }} />
+        <div
+          ref={clefRef}
+          aria-hidden
+          style={{
+            position:   'absolute',
+            top: 0, left: 0, bottom: 0,
+            width:      CLEF_PANEL_W,
+            background: '#ffffff',
+            zIndex:     2,
+            pointerEvents: 'none',
+          }}
+        />
+        <div
+          aria-hidden
+          style={{
+            position:   'absolute',
+            top: 0, bottom: 0, left: PLAYHEAD_X,
+            width:      2,
+            background: 'rgba(168,85,247,.55)',
+            zIndex:     3,
+            pointerEvents: 'none',
+          }}
+        />
+      </div>
       <div style={{
         display: 'flex', justifyContent: 'center',
         gap: 16, paddingTop: 2, paddingBottom: 4,

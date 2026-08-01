@@ -9,7 +9,27 @@ interface Props {
   endMidi?:       number
   onKeyPress?:    (midi: number, velocity: number) => void
   onKeyRelease?:  (midi: number) => void
+  scrollLeft?:      number             // synced with SynthesiaRoll's scroll position
+  onScrollChange?: (left: number) => void
 }
+
+// Chroma-family glow, matched to SynthesiaRoll's falling-note palette so the
+// key that lights up here is the same color as the note that fell onto it.
+const CHROMA_GLOW = [
+  { top: '#c084fc', bot: '#7c3aed', glow: '#a855f7' }, // C
+  { top: '#e879f9', bot: '#a21caf', glow: '#d946ef' }, // C#
+  { top: '#f472b6', bot: '#be185d', glow: '#ec4899' }, // D
+  { top: '#fb7185', bot: '#be123c', glow: '#f43f5e' }, // D#
+  { top: '#f97316', bot: '#c2410c', glow: '#fb923c' }, // E
+  { top: '#fbbf24', bot: '#b45309', glow: '#f59e0b' }, // F
+  { top: '#a3e635', bot: '#4d7c0f', glow: '#84cc16' }, // F#
+  { top: '#34d399', bot: '#065f46', glow: '#10b981' }, // G
+  { top: '#22d3ee', bot: '#0e7490', glow: '#06b6d4' }, // G#
+  { top: '#60a5fa', bot: '#1d4ed8', glow: '#3b82f6' }, // A
+  { top: '#818cf8', bot: '#3730a3', glow: '#6366f1' }, // A#
+  { top: '#a78bfa', bot: '#5b21b6', glow: '#8b5cf6' }, // B
+]
+function chromaGlow(midi: number) { return CHROMA_GLOW[midi % 12] }
 
 export default function PianoRoll({
   activeNotes,
@@ -19,6 +39,8 @@ export default function PianoRoll({
   endMidi       = 108,
   onKeyPress,
   onKeyRelease,
+  scrollLeft,
+  onScrollChange,
 }: Props) {
   const pressedKeys = useRef<Set<number>>(new Set())
   const scrollRef   = useRef<HTMLDivElement>(null)
@@ -69,6 +91,12 @@ export default function PianoRoll({
     }
   }, [expectedNote])
 
+  // ── Mirror SynthesiaRoll's scroll position ───────────────────
+  useEffect(() => {
+    if (scrollLeft === undefined || !scrollRef.current) return
+    if (scrollRef.current.scrollLeft !== scrollLeft) scrollRef.current.scrollLeft = scrollLeft
+  }, [scrollLeft])
+
   // ── Press / Release ──────────────────────────────────────────
   const handlePress = useCallback((midi: number, velocity = 80) => {
     if (pressedKeys.current.has(midi)) return
@@ -116,7 +144,8 @@ export default function PianoRoll({
 
   // ── White key styles ─────────────────────────────────────────
   function whiteStyle(midi: number): React.CSSProperties {
-    const state = getKeyState(midi)
+    const state  = getKeyState(midi)
+    const chroma = chromaGlow(midi)
 
     const configs = {
       active: {
@@ -127,11 +156,12 @@ export default function PianoRoll({
         transform:  'scaleY(.97)',
       },
       expected: {
-        background: 'linear-gradient(180deg, #ddd6fe 0%, #c4b5fd 60%, #a78bfa 100%)',
-        border:     '1px solid #7c3aed',
-        color:      '#4c1d95',
-        boxShadow:  'inset 0 -3px 6px rgba(124,58,237,.3), 0 0 12px rgba(124,58,237,.5)',
+        background: `linear-gradient(180deg, ${chroma.top} 0%, ${chroma.bot} 100%)`,
+        border:     `1px solid ${chroma.glow}`,
+        color:      '#fff',
+        boxShadow:  `inset 0 -3px 6px rgba(0,0,0,.25), 0 0 20px ${chroma.glow}`,
         transform:  'scaleY(1)',
+        animation:  'expectedGlow .8s ease-in-out infinite',
       },
       scale: {
         background: 'linear-gradient(180deg, #f0e6ff 0%, #e8d5ff 60%, #ddc4ff 100%)',
@@ -176,7 +206,8 @@ export default function PianoRoll({
 
   // ── Black key styles ─────────────────────────────────────────
   function blackStyle(midi: number, leftPos: number): React.CSSProperties {
-    const state = getKeyState(midi)
+    const state  = getKeyState(midi)
+    const chroma = chromaGlow(midi)
 
     const configs = {
       active: {
@@ -186,10 +217,11 @@ export default function PianoRoll({
         transform:  'scaleY(.97)',
       },
       expected: {
-        background: 'linear-gradient(180deg, #7c3aed 0%, #5b21b6 100%)',
-        border:     '1px solid #a855f7',
-        boxShadow:  '0 0 14px rgba(124,58,237,.8), inset 0 -2px 3px rgba(0,0,0,.3)',
+        background: `linear-gradient(180deg, ${chroma.bot} 0%, ${chroma.glow} 100%)`,
+        border:     `1px solid ${chroma.glow}`,
+        boxShadow:  `0 0 18px ${chroma.glow}, inset 0 -2px 3px rgba(0,0,0,.3)`,
         transform:  'scaleY(1)',
+        animation:  'expectedGlow .8s ease-in-out infinite',
       },
       scale: {
         background: 'linear-gradient(180deg, #4c1d95 0%, #3b0764 100%)',
@@ -287,6 +319,7 @@ export default function PianoRoll({
       {/* Scrollable keyboard */}
       <div
         ref={scrollRef}
+        onScroll={e => onScrollChange?.(e.currentTarget.scrollLeft)}
         style={{
           overflowX:     'auto',
           overflowY:     'hidden',
@@ -314,7 +347,8 @@ export default function PianoRoll({
           {/* White keys */}
           <div style={{ position: 'absolute', top: 12, left: 0, display: 'flex' }}>
             {whiteKeys.map(key => {
-              const state = getKeyState(key.midi)
+              const state  = getKeyState(key.midi)
+              const chroma = chromaGlow(key.midi)
               return (
                 <div
                   key={key.midi}
@@ -331,7 +365,7 @@ export default function PianoRoll({
                       fontSize:     7,
                       fontWeight:   700,
                       color:        state === 'active'   ? '#fff'
-                                  : state === 'expected' ? '#4c1d95'
+                                  : state === 'expected' ? '#fff'
                                   : state === 'scale'    ? '#6d28d9'
                                   : '#999',
                       pointerEvents: 'none',
@@ -341,7 +375,7 @@ export default function PianoRoll({
                     </span>
                   )}
 
-                  {/* Pulsing dot on expected note */}
+                  {/* Pulsing dot on expected note — colored to match the falling note */}
                   {state === 'expected' && (
                     <div style={{
                       position:     'absolute',
@@ -351,8 +385,8 @@ export default function PianoRoll({
                       width:        10,
                       height:       10,
                       borderRadius: '50%',
-                      background:   '#7c3aed',
-                      boxShadow:    '0 0 10px #a855f7',
+                      background:   chroma.glow,
+                      boxShadow:    `0 0 10px ${chroma.glow}`,
                       animation:    'keyPulse 0.8s infinite',
                       pointerEvents:'none',
                     }} />
@@ -365,6 +399,7 @@ export default function PianoRoll({
           {/* Black keys */}
           {blackKeys.map(key => {
             const state   = getKeyState(key.midi)
+            const chroma  = chromaGlow(key.midi)
             const leftPos = key.whitesBefore * (WHITE_W + 1) - BLACK_W / 2 + 1
             return (
               <div
@@ -376,14 +411,14 @@ export default function PianoRoll({
                 onTouchStart={e => { e.preventDefault(); handlePress(key.midi, 80) }}
                 onTouchEnd={() => handleRelease(key.midi)}
               >
-                {/* Pulsing dot on expected black key */}
+                {/* Pulsing dot on expected black key — colored to match the falling note */}
                 {state === 'expected' && (
                   <div style={{
                     width:        7,
                     height:       7,
                     borderRadius: '50%',
-                    background:   '#e9d5ff',
-                    boxShadow:    '0 0 8px #a855f7',
+                    background:   '#fff',
+                    boxShadow:    `0 0 8px ${chroma.glow}`,
                     marginBottom: 3,
                     animation:    'keyPulse 0.8s infinite',
                     pointerEvents:'none',
@@ -422,6 +457,10 @@ export default function PianoRoll({
         @keyframes keyPulse {
           0%,100% { opacity:1; transform:translateX(-50%) scale(1); }
           50%     { opacity:.4; transform:translateX(-50%) scale(1.5); }
+        }
+        @keyframes expectedGlow {
+          0%,100% { filter:brightness(1); }
+          50%     { filter:brightness(1.4); }
         }
       `}</style>
     </div>

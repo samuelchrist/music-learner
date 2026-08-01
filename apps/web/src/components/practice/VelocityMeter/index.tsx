@@ -6,6 +6,7 @@ interface Props {
   avgVelocity?: number
   minVelocity?: number
   maxVelocity?: number
+  vertical?:    boolean
 }
 
 // Velocity zones
@@ -27,6 +28,7 @@ export default function VelocityMeter({
   avgVelocity = 0,
   minVelocity = 0,
   maxVelocity = 0,
+  vertical    = false,
 }: Props) {
   const barRef     = useRef<HTMLDivElement>(null)
   const zone       = getVelocityZone(velocity)
@@ -36,10 +38,106 @@ export default function VelocityMeter({
   // Animate bar
   useEffect(() => {
     if (!barRef.current) return
-    barRef.current.style.width = `${pct}%`
-    barRef.current.style.background = `linear-gradient(90deg, ${zone.color}88, ${zone.color})`
-    barRef.current.style.boxShadow   = velocity > 0 ? `0 0 8px ${zone.color}66` : 'none'
-  }, [velocity, pct, zone.color])
+    if (vertical) {
+      barRef.current.style.height = `${pct}%`
+      barRef.current.style.background = `linear-gradient(0deg, ${zone.color}88, ${zone.color})`
+    } else {
+      barRef.current.style.width = `${pct}%`
+      barRef.current.style.background = `linear-gradient(90deg, ${zone.color}88, ${zone.color})`
+    }
+    barRef.current.style.boxShadow = velocity > 0 ? `0 0 8px ${zone.color}66` : 'none'
+  }, [velocity, pct, zone.color, vertical])
+
+  if (vertical) {
+    return (
+      <div style={{
+        width:          76,
+        height:         '100%',
+        padding:        '10px 8px',
+        background:     'var(--surface)',
+        border:         '1px solid var(--border)',
+        borderRadius:   10,
+        display:        'flex',
+        flexDirection:  'column',
+        alignItems:     'center',
+        gap:            6,
+        flexShrink:     0,
+        boxSizing:      'border-box',
+      }}>
+        <span style={{
+          fontSize:      9,
+          fontWeight:    700,
+          color:         'var(--text-sub)',
+          textTransform: 'uppercase',
+          letterSpacing: '0.06em',
+        }}>
+          Velocity
+        </span>
+
+        <span style={{ fontSize: 15, fontWeight: 800, color: zone.color }}>
+          {velocity}
+        </span>
+        <span style={{
+          fontSize:     9,
+          fontWeight:   700,
+          color:        zone.color,
+          background:   zone.bg,
+          padding:      '1px 6px',
+          borderRadius: 999,
+          border:       `1px solid ${zone.color}44`,
+        }}>
+          {zone.label}
+        </span>
+
+        {/* Vertical bar track */}
+        <div style={{
+          width:        14,
+          flex:         1,
+          minHeight:    60,
+          background:   '#1e293b',
+          borderRadius: 7,
+          overflow:     'hidden',
+          position:     'relative',
+          display:      'flex',
+          alignItems:   'flex-end',
+        }}>
+          {[20, 40, 55, 70, 85, 100, 115].map(v => (
+            <div key={v} style={{
+              position:   'absolute',
+              left:       0,
+              right:      0,
+              bottom:     `${(v / 127) * 100}%`,
+              height:     1,
+              background: 'rgba(255,255,255,0.1)',
+            }} />
+          ))}
+          <div
+            ref={barRef}
+            style={{
+              width:        '100%',
+              height:       0,
+              borderRadius: 7,
+              transition:   'height 0.08s ease, background 0.1s ease',
+            }}
+          />
+        </div>
+
+        {noteCount > 0 && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'center', marginTop: 2 }}>
+            {[
+              { label: 'Avg', value: avgVelocity },
+              { label: 'Min', value: minVelocity },
+              { label: 'Max', value: maxVelocity },
+            ].map(s => (
+              <div key={s.label} style={{ fontSize: 9, color: 'var(--text-sub)' }}>
+                {s.label} <strong style={{ color: getVelocityZone(s.value).color }}>{s.value}</strong>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    )
+  }
 
   return (
     <div style={{

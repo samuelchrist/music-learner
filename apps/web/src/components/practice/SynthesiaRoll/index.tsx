@@ -9,8 +9,9 @@ interface Props {
   bpm:          number
   isPlaying:    boolean
   isDemoMode?:  boolean
-  activeNotes?: Set<number>
   states?:      { status: 'pending' | 'active' | 'hit' | 'miss' }[]
+  scrollLeft?:      number             // synced with PianoRoll's scroll position
+  onScrollChange?: (left: number) => void
 }
 const MIN_MIDI = 21
 const MAX_MIDI = 108
@@ -22,32 +23,39 @@ function getNoteLabel(midi: number) {
   return `${names[midi % 12]}${Math.floor(midi / 12) - 1}`
 }
 
-let layoutCache: Map<number, { x: number; w: number }> | null = null
-let cacheW = 0
+// Fixed per-key geometry — matches PianoRoll's WHITE_W/BLACK_W exactly so a
+// falling note's lane lines up with its key underneath, regardless of scroll.
+const WHITE_W = 28
+const BLACK_W = 18
+const STEP    = WHITE_W + 1   // PianoRoll's white keys have a 1px marginRight
 
-function buildLayout(W: number) {
-  if (layoutCache && cacheW === W) return layoutCache
-  layoutCache = new Map(); cacheW = W
-  let totalWhites = 0
-  for (let m = MIN_MIDI; m <= MAX_MIDI; m++) if (!isBlack(m)) totalWhites++
-  const ww = W / totalWhites
-  const bw = ww * 0.58
+let layoutCache: Map<number, { x: number; w: number }> | null = null
+
+function buildLayout() {
+  if (layoutCache) return layoutCache
+  layoutCache = new Map()
   let wi = 0
   for (let m = MIN_MIDI; m <= MAX_MIDI; m++) {
-    if (!isBlack(m)) { layoutCache.set(m, { x: wi * ww, w: ww - 1 }); wi++ }
+    if (!isBlack(m)) { layoutCache.set(m, { x: wi * STEP, w: WHITE_W }); wi++ }
     else {
       let pw = 0
       for (let k = MIN_MIDI; k < m; k++) if (!isBlack(k)) pw++
-      layoutCache.set(m, { x: pw * ww - bw / 2, w: bw })
+      layoutCache.set(m, { x: pw * STEP - BLACK_W / 2 + 1, w: BLACK_W })
     }
   }
   return layoutCache
 }
 
+function getKeyboardWidth() {
+  let totalWhites = 0
+  for (let m = MIN_MIDI; m <= MAX_MIDI; m++) if (!isBlack(m)) totalWhites++
+  return totalWhites * STEP
+}
+const KEYBOARD_W = getKeyboardWidth()
+
 const LOOKAHEAD = 6
-const KEY_H     = 100
 const ROLL_H    = 360
-const CANVAS_H  = ROLL_H + KEY_H
+const CANVAS_H  = ROLL_H
 const HIT_Y     = ROLL_H
 
 function getSongEnd(notes: Note[]) {
@@ -89,9 +97,11 @@ function getNoteColors(midi: number, status: string, isCurrent: boolean, isDemoM
 
 export default function SynthesiaRoll({
   notes, currentIdx, hitIdx, bpm, isPlaying,
-  isDemoMode = false, activeNotes = new Set(), states = [], waitBeat
+  isDemoMode = false, states = [], waitBeat,
+  scrollLeft, onScrollChange,
 }: Props) {
   const canvasRef    = useRef<HTMLCanvasElement>(null)
+  const scrollRef    = useRef<HTMLDivElement>(null)
   const animRef      = useRef<number>()
   const startRef     = useRef<number>(0)
   const startBeatRef = useRef<number>(0)
@@ -109,21 +119,32 @@ export default function SynthesiaRoll({
       startBeatRef.current = -LOOKAHEAD
       stoppedRef.current   = false
     } else if (waitBeat !== undefined) {
-      startRef.current     = performance.now()
-      startBeatRef.current = waitBeat - LOOKAHEAD  // note starts at TOP
+      // Continue from wherever the roll is currently frozen instead of
+      // rebasing the whole clock to (waitBeat - LOOKAHEAD) — that rebase
+      // made the roll jump backwards on every hit, so every note still
+      // above the hit line appeared to snap back to the top and re-fall.
+      startRef.current      = performance.now()
+      startBeatRef.current  = curBeatRef.current
       waitTargetRef.current = waitBeat
-      stoppedRef.current   = false
+      stoppedRef.current    = false
     } else {
       stoppedRef.current   = false
       curBeatRef.current   = -LOOKAHEAD
     }
   }, [isPlaying, waitBeat])
+
+  // Mirror PianoRoll's scroll position so falling notes line up with their key
+  useEffect(() => {
+    if (scrollLeft === undefined || !scrollRef.current) return
+    if (scrollRef.current.scrollLeft !== scrollLeft) scrollRef.current.scrollLeft = scrollLeft
+  }, [scrollLeft])
+
   const draw = useCallback(() => {
     const canvas = canvasRef.current
     if (!canvas) return
     const ctx    = canvas.getContext('2d')!
     const W      = canvas.width
-    const layout = buildLayout(W)
+    const layout = buildLayout()
     const pxPerBeat = HIT_Y / LOOKAHEAD
 
     ctx.clearRect(0, 0, W, CANVAS_H)
@@ -173,21 +194,24 @@ export default function SynthesiaRoll({
     }
 
     // ── Falling notes ──
-    const pressedKeys = new Set<number>()
-
     notes.forEach((note, idx) => {
       if (note.isRest || !note.note) return
       const l = layout.get(note.note); if (!l) return
       const noteBeat = note.beat - 1
       const noteEnd  = noteBeat + note.duration
+      const status   = states[idx]?.status || 'pending'
+
+      // Wait mode's clock rebases to each new current note (waitBeat - LOOKAHEAD)
+      // so it can approach-and-freeze at the hit line. That rebasing would make
+      // already-consumed notes reappear above the line and "fall" again — they're
+      // done, so just stop drawing them once passed.
+      if (!isPlaying && waitBeat !== undefined && (status === 'hit' || status === 'miss')) return
+
       if (noteBeat > cb + LOOKAHEAD + 1) return
       if (noteEnd  < cb - 0.5)           return
 
-      const status    = states[idx]?.status || 'pending'
       const isCurrent = idx === colorIdx
       const colors    = getNoteColors(note.note, status, isCurrent, isDemoMode)
-
-      if (noteBeat <= cb && noteEnd >= cb) pressedKeys.add(note.note)
 
       const topY    = HIT_Y - (noteBeat - cb) * pxPerBeat
       const botY    = HIT_Y - (noteEnd  - cb) * pxPerBeat
@@ -251,68 +275,6 @@ export default function SynthesiaRoll({
     ctx.beginPath(); ctx.moveTo(0,HIT_Y); ctx.lineTo(W,HIT_Y); ctx.stroke()
     ctx.shadowBlur  = 0
 
-    // ── Keyboard background ──
-    const kbGrad = ctx.createLinearGradient(0, HIT_Y, 0, CANVAS_H)
-    kbGrad.addColorStop(0, '#0d1b2e')
-    kbGrad.addColorStop(1, '#060b14')
-    ctx.fillStyle = kbGrad
-    ctx.fillRect(0, HIT_Y, W, KEY_H)
-
-    const blackH = KEY_H * 0.62
-
-    // White keys
-    for (let midi = MIN_MIDI; midi <= MAX_MIDI; midi++) {
-      if (isBlack(midi)) continue
-      const l       = layout.get(midi)!
-      const pressed = pressedKeys.has(midi) || activeNotes.has(midi)
-
-      if (pressed) {
-        const pc = getNoteColors(midi, 'active', true, isDemoMode)
-        const kg = ctx.createLinearGradient(l.x, HIT_Y, l.x, HIT_Y + KEY_H)
-        kg.addColorStop(0, pc.top)
-        kg.addColorStop(1, pc.bot)
-        ctx.shadowColor = pc.glow; ctx.shadowBlur = 16
-        ctx.fillStyle   = kg
-      } else {
-        ctx.fillStyle   = 'rgba(241,245,249,0.92)'
-        ctx.shadowBlur  = 0
-      }
-      ctx.strokeStyle = 'rgba(0,0,0,0.2)'
-      ctx.lineWidth   = 0.5
-      ctx.beginPath()
-      ctx.roundRect(l.x, HIT_Y+1, l.w-0.5, KEY_H-2, [0,0,4,4])
-      ctx.fill(); ctx.stroke()
-      ctx.shadowBlur = 0
-
-      if (midi % 12 === 0) {
-        ctx.fillStyle    = pressed ? '#fff' : 'rgba(100,116,139,0.7)'
-        ctx.font         = `${Math.min(9, l.w*0.5)}px Arial`
-        ctx.textAlign    = 'center'
-        ctx.textBaseline = 'bottom'
-        ctx.fillText(getNoteLabel(midi), l.x+l.w/2, HIT_Y+KEY_H-3)
-      }
-    }
-
-    // Black keys
-    for (let midi = MIN_MIDI; midi <= MAX_MIDI; midi++) {
-      if (!isBlack(midi)) continue
-      const l       = layout.get(midi)!
-      const pressed = pressedKeys.has(midi) || activeNotes.has(midi)
-      if (pressed) {
-        const pc = getNoteColors(midi, 'active', true, isDemoMode)
-        const kg = ctx.createLinearGradient(l.x, HIT_Y, l.x, HIT_Y+blackH)
-        kg.addColorStop(0, pc.top); kg.addColorStop(1, pc.bot)
-        ctx.shadowColor = pc.glow; ctx.shadowBlur = 14
-        ctx.fillStyle = kg
-      } else {
-        ctx.fillStyle  = 'rgba(15,23,42,0.95)'
-        ctx.shadowBlur = 0
-      }
-      ctx.beginPath()
-      ctx.roundRect(l.x, HIT_Y+1, l.w, blackH, [0,0,3,3])
-      ctx.fill(); ctx.shadowBlur = 0
-    }
-
     // ── Progress bar ──
     const prog = songEnd > 0 ? Math.min(cb / songEnd, 1) : 0
     const pGrad = ctx.createLinearGradient(0,0,W,0)
@@ -329,7 +291,7 @@ export default function SynthesiaRoll({
     ctx.fillText(`♩ ${Math.max(0,cb).toFixed(1)} / ${songEnd.toFixed(0)}`, 6, 6)
 
     animRef.current = requestAnimationFrame(draw)
-  }, [notes, currentIdx, colorIdx, bpm, isPlaying, isDemoMode, activeNotes, states, songEnd, waitBeat])
+  }, [notes, currentIdx, colorIdx, bpm, isPlaying, isDemoMode, states, songEnd, waitBeat])
 
 
   useEffect(() => {
@@ -338,17 +300,19 @@ export default function SynthesiaRoll({
   }, [draw])
   useEffect(() => {
     const canvas = canvasRef.current; if (!canvas) return
-    const ro = new ResizeObserver(() => {
-      canvas.width = canvas.offsetWidth || 800; canvas.height = CANVAS_H; layoutCache = null
-    })
-    ro.observe(canvas)
-    setTimeout(() => { if (canvas) { canvas.width = canvas.offsetWidth || 800; canvas.height = CANVAS_H } }, 50)
-    return () => ro.disconnect()
+    canvas.width  = KEYBOARD_W
+    canvas.height = CANVAS_H
   }, [])
 
   return (
     <div style={{ width: '100%', background: '#060b14', position: 'relative', minHeight: `${CANVAS_H}px` }}>
-      <canvas ref={canvasRef} style={{ width: '100%', display: 'block' }} />
+      <div
+        ref={scrollRef}
+        onScroll={e => onScrollChange?.(e.currentTarget.scrollLeft)}
+        style={{ overflowX: 'auto', overflowY: 'hidden' }}
+      >
+        <canvas ref={canvasRef} style={{ display: 'block' }} />
+      </div>
       <div style={{ position: 'absolute', top: 8, right: 8, display: 'flex', gap: 8, fontSize: 10 }}>
         {[
           { color: '#8b5cf6', label: 'Upcoming' },

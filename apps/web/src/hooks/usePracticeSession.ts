@@ -10,6 +10,11 @@ const TIMING_WINDOWS = {
   GOOD:    150,   // ms — good timing
 } as const
 
+// Must mirror SynthesiaRoll's LOOKAHEAD (and useDemoPlayer's LOOKAHEAD_BEATS):
+// in Synthesia view, a note isn't actually due until its falling representation
+// has had this many beats to travel down to the piano.
+const LOOKAHEAD_BEATS = 6
+
 interface Win {
   idx:       number
   note:      number
@@ -28,6 +33,7 @@ export function usePracticeSession() {
   const scoring = useRef(new ScoringEngine())
   const windows = useRef<Win[]>([])
   const timers  = useRef<number[]>([])
+  const lookaheadRef = useRef(false)
 
   const clear = () => {
     timers.current.forEach(clearTimeout)
@@ -40,11 +46,17 @@ export function usePracticeSession() {
 
   playRef.current = () => {
     if (!lesson) return
-    setSessionState('playing')
     reset()
+    setSessionState('playing')
     scoring.current.reset(lesson.notes.filter(n => !n.isRest).length)
 
-    const now = performance.now()
+    // Only Synthesia view needs the lead-in — Staff view has no falling
+    // notes to wait on, so a note is due as soon as it's actually current.
+    // trueNow anchors the setTimeout delays (relative to right now); `now`
+    // is the wall-clock moment the first note actually becomes due.
+    const trueNow     = performance.now()
+    const lookaheadMs = lookaheadRef.current ? LOOKAHEAD_BEATS * (60 / bpm) * 1000 : 0
+    const now = trueNow + lookaheadMs
     const ms  = (60 / bpm) * 1000   // ms per beat
 
     if (metronomeOn) Metronome.start(bpm)
@@ -64,7 +76,7 @@ export function usePracticeSession() {
 
       // Activate note (highlight it)
       timers.current.push(
-          window.setTimeout(() => setNoteIndex(i), w.openTime - now)
+          window.setTimeout(() => setNoteIndex(i), w.openTime - trueNow)
       )
 
       // Close window — mark as miss if not hit
@@ -80,13 +92,14 @@ export function usePracticeSession() {
                 setSessionState('finished')
               }, 400)
             }
-          }, w.closeTime - now)
+          }, w.closeTime - trueNow)
       )
     })
   }
 
-  const startSession = useCallback(async () => {
+  const startSession = useCallback(async (useLookahead = false) => {
     if (!lesson || sessionState !== 'idle') return
+    lookaheadRef.current = useLookahead
     setSessionState('countdown')
     await Metronome.countdown(3, bpm)
     playRef.current()   // ✅ always calls latest version
